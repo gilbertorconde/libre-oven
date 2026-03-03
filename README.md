@@ -31,6 +31,8 @@ Author: [gil](https://github.com/gilbertorconde) — 2026
 4. Click **Add**, then search for **Libre Oven Card** and install it.
 5. Reload your browser / clear the cache.
 
+[![Add to HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=gilbertorconde&repository=libre-oven&category=dashboard)
+
 ### Option B — Manual
 
 1. Download `libre-oven-card.js` from the [latest release](https://github.com/gilbertorconde/libre-oven/releases/latest).
