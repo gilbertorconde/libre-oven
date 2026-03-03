@@ -1,0 +1,6 @@
+{
+  "name": "Libre Oven Card",
+  "content_in_root": true,
+  "filename": "libre-oven-card.js",
+  "homeassistant": "2023.4.0"
+}

@@ -1,0 +1,2301 @@
+esphome:
+  name: libre-oven
+  friendly_name: Libre Oven
+  comment: Libre Oven Controller Firmware
+  on_boot:
+    priority: -100
+    then:
+      - script.execute: wake_screen
+      - delay: 1s
+      - lambda: |-
+          // Initialize encoders with current working values
+          id(encoder_temperature).publish_state(id(working_temperature));
+          id(encoder_timer).publish_state(id(working_timer));
+          id(encoder_mode).publish_state(id(working_mode));
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_ESPTOOLPY_FLASHMODE_QIO: "y"
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+# WiFi Configuration
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot in case WiFi connection fails
+  ap:
+    ssid: "Libre-Oven-PT100 Fallback"
+    password: !secret wifi_password
+
+# Note: captive_portal is unsupported on ESP-IDF.
+# improv_serial was tried but it blocks the main loop for 300-600ms,
+# corrupting SPI reads from the MAX31865 RTD sensor.
+
+# Logger - silenced except PID autotune output
+logger:
+  level: DEBUG
+  deassert_rts_dtr: true
+  logs:
+    component: NONE
+    sensor: ERROR
+    sensor.filter: ERROR
+    display: ERROR
+    wifi: ERROR
+    api: ERROR
+    api.connection: ERROR
+    ota: ERROR
+    mdns: ERROR
+    esp-idf: ERROR
+    esp32.preferences: ERROR
+    switch: ERROR
+    number: ERROR
+    text_sensor: ERROR
+    binary_sensor: ERROR
+    climate: ERROR
+    pid: DEBUG
+    pid.autotune: DEBUG
+    pid.climate: DEBUG
+    output: ERROR
+    light: ERROR
+    script: ERROR
+    scheduler: ERROR
+    max31865: NONE
+    spi: ERROR
+    app: ERROR
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+# Enable Over-The-Air updates
+ota:
+  - platform: esphome
+    password: !secret ota_password
+  - platform: web_server
+
+# Enable web server for local access
+web_server:
+  port: 80
+
+# Status LED (onboard LED)
+status_led:
+  pin:
+    number: GPIO48
+    inverted: true
+
+#####################################
+# Display Configuration
+#####################################
+#
+# ILI9341 TFT Display - SPI
+#   SCK:  GPIO14 (HSPI SCK)
+#   MOSI: GPIO13 (HSPI MOSI)
+#   CS:   GPIO15
+#   DC:   GPIO12
+#   BLK:  GPIO11 (Backlight PWM)
+#   RST:  Not connected (using software reset)
+#
+#####################################
+
+# SPI Bus for Display
+spi:
+  - id: spi_display
+    clk_pin: GPIO14
+    mosi_pin: GPIO13
+
+  # SPI bus for MAX31865 PT100 RTD
+  # Software SPI: more tolerant of long wires and noise.
+  - id: spi_max31865
+    clk_pin: GPIO18
+    mosi_pin: GPIO16
+    miso_pin: GPIO19
+    # interface: software
+
+# Display Backlight PWM
+output:
+  - platform: ledc
+    id: backlight_pwm
+    pin: GPIO11
+    frequency: 1000Hz
+
+  # Buzzer output (simple on/off beep)
+  - platform: gpio
+    id: buzzer_output
+    pin: GPIO6
+
+  # PID heat output: time-proportioning for SSR control.
+  # 30s cycle means e.g. 60% duty = 18s ON / 12s OFF.
+  - platform: slow_pwm
+    id: pid_heat_output
+    period: 10s
+    turn_on_action:
+      - lambda: |-
+          if (id(active_top_element)) id(top_element_relay).turn_on();
+          if (id(active_bottom_element)) id(bottom_element_relay).turn_on();
+          if (id(active_grill_element)) id(grill_element_relay).turn_on();
+    turn_off_action:
+      - lambda: |-
+          id(top_element_relay).turn_off();
+          id(bottom_element_relay).turn_off();
+          id(grill_element_relay).turn_off();
+
+# Backlight Control
+light:
+  - platform: monochromatic
+    output: backlight_pwm
+    name: "Display Backlight"
+    id: display_backlight
+    restore_mode: ALWAYS_ON
+    default_transition_length: 0s
+
+# PID Climate Controller
+#   control_parameters:
+#     kp: 0.06512
+#     ki: 0.00032
+#     kd: 3.36308
+#
+#   Please copy these values into your YAML configuration! They will reset on the next reboot.
+#   Alternative Rules:
+#     Rule 'Ziegler-Nichols PI':
+#       kp: 0.04884, ki: 0.00014, kd: 0.00000
+#     Rule 'Pessen Integral PID':
+#       kp: 0.07598, ki: 0.00046, kd: 4.70831
+#     Rule 'Some Overshoot PID':
+#       kp: 0.03614, ki: 0.00018, kd: 4.97736
+#     Rule 'No Overshoot PID':
+#       kp: 0.02171, ki: 0.00011, kd: 2.80257
+climate:
+  - platform: pid
+    id: pid_climate
+    name: "Oven PID"
+    sensor: runtime_temperature
+    default_target_temperature: 200°C
+    heat_output: pid_heat_output
+    control_parameters:
+      kp: 0.03614
+      ki: 0.00018
+      kd: 2.80257
+      output_averaging_samples: 5
+      derivative_averaging_samples: 5
+    deadband_parameters:
+      threshold_high: 1.0°C
+      threshold_low: -1.0°C
+      ki_multiplier: 0.05
+      deadband_output_averaging_samples: 15
+
+# ILI9341 TFT Display
+color:
+  - id: background_color
+    hex: FFFFFF
+  - id: text_color
+    hex: 161616
+  - id: off_element
+    hex: e2e2e2
+  - id: on_element
+    hex: e5c000
+  - id: hot_element
+    hex: e01e00
+  - id: selected_element
+    hex: 161616
+
+display:
+  - platform: ili9xxx
+    id: oven_display
+    model: ili9341
+    cs_pin: GPIO15
+    dc_pin: GPIO12
+    spi_id: spi_display
+    rotation: 0
+    color_palette: NONE
+    invert_colors: false
+    dimensions:
+      width: 320
+      height: 240
+    # 8 FPS is enough for this UI and reduces redraw load.
+    update_interval: 125ms
+    auto_clear_enabled: true
+
+    lambda: |-
+      // Clear entire screen to black first
+      it.filled_rectangle(0, 0, it.get_width(), it.get_height(), id(background_color));
+
+      // When sleeping, keep a blank frame and skip all heavy drawing.
+      // This keeps runtime logic independent and avoids UI burn patterns.
+      if (id(screen_sleeping)) {
+        return;
+      }
+
+      // ── Startup splash (first 12 seconds) ──────────────────────
+      // Sensor data is ignored for 10s; display stays 2s longer so
+      // the first real median is ready before the UI appears.
+      if (millis() < 12000) {
+        int cx = it.get_width() / 2;
+        int cy = it.get_height() / 2;
+        it.print(cx, cy - 20, id(font_normal), id(text_color),
+                 TextAlign::CENTER, "Starting up...");
+
+        // Animated dots: cycle 1-3 dots every ~500ms
+        int dots = ((millis() / 500) % 3) + 1;
+        const char *dot_str = dots == 1 ? "." : (dots == 2 ? ".." : "...");
+        it.print(cx, cy + 15, id(font_normal), id(off_element),
+                 TextAlign::CENTER, dot_str);
+        return;
+      }
+
+      // Get current page
+      int page = id(current_page);
+
+      // ═══════════════════════════════════════════════════════════
+      // PAGE 0: MAIN SCREEN
+      // ═══════════════════════════════════════════════════════════
+      if (page == 0) {
+        // ═══════════════════════════════════════════════════════════
+        // STATE VARIABLES for 4-state / 3-state display coloring
+        // ═══════════════════════════════════════════════════════════
+        // SSR actual state (is it on right now?)
+        bool top_ssr = id(top_element_relay).state;
+        bool bottom_ssr = id(bottom_element_relay).state;
+        bool grill_ssr = id(grill_element_relay).state;
+        bool fan_ssr = id(fan_relay).state;
+        bool light_ssr = id(light_relay).state || top_ssr || bottom_ssr || grill_ssr || fan_ssr;
+
+        // Draft selection (user chose on mode screen)
+        bool top_draft = id(desired_top_element);
+        bool bottom_draft = id(desired_bottom_element);
+        bool grill_draft = id(desired_grill_element);
+        bool fan_draft = id(desired_fan_element);
+        bool any_draft = top_draft || bottom_draft || grill_draft || fan_draft;
+
+        // Active selection (applied to running program)
+        bool top_active = id(active_top_element);
+        bool bottom_active = id(active_bottom_element);
+        bool grill_active = id(active_grill_element);
+        bool fan_active = id(active_fan_element);
+        bool any_active = top_active || bottom_active || grill_active || fan_active;
+
+        float current_temp = id(current_oven_temp);
+        float target = id(active_temperature);
+
+        bool any_heating_active = top_active || bottom_active || grill_active;
+        bool allow_heat =
+          (target > 0.0f && any_heating_active) &&
+          (id(timer_state) == 2 || id(timer_state) == 3 || id(timer_state) == 4);
+
+        // ═══════════════════════════════════════════════════════════
+        // 4-STATE COLOR LOGIC for heating elements (top, bottom, grill):
+        //   Gray  = not selected, no program
+        //   White = selected in draft, program not applied
+        //   Yellow = program applied/armed, SSR off (temp cycling)
+        //   Red   = SSR actually on (heating)
+        // 3-STATE for non-cycling (fan, light/frame):
+        //   Gray  = off
+        //   White = draft selected, not active
+        //   Yellow = SSR on (active)
+        // ═══════════════════════════════════════════════════════════
+        auto heating_color = [&](bool ssr, bool active, bool draft) -> Color {
+          if (ssr)                     return id(on_element);       // red: SSR on
+          if (allow_heat && active)    return id(hot_element);      // yellow: armed
+          if (draft || active)         return id(selected_element); // white: draft/selected
+          return id(off_element);                                   // gray: off
+        };
+        auto aux_color = [&](bool ssr, bool active, bool draft) -> Color {
+          if (ssr)                     return id(hot_element);      // yellow: SSR on
+          if (draft || active)         return id(selected_element); // white: draft/selected
+          return id(off_element);                                   // gray: off
+        };
+
+        Color top_color = heating_color(top_ssr, top_active, top_draft);
+        Color bottom_color = heating_color(bottom_ssr, bottom_active, bottom_draft);
+        Color grill_color = heating_color(grill_ssr, grill_active, grill_draft);
+        Color fan_color = aux_color(fan_ssr, fan_active, fan_draft);
+
+      // Determine which timer to display on main screen
+      int shown_sec = 0;
+      Color timer_color = id(off_element);
+      int state = id(timer_state);
+
+      if (state == 1 || state == 2) {
+        // Delay / preheating phase → yellow
+        shown_sec = id(timer_delay_remaining);
+        timer_color = id(hot_element);  // yellow-ish
+      } else if (state == 3) {
+        // Ready phase → green (holding at temperature)
+        shown_sec = id(timer_cook_remaining);
+        timer_color = id(on_element);
+      } else if (state == 4) {
+        // Cooking phase → green
+        shown_sec = id(timer_cook_remaining);
+        timer_color = id(on_element);
+      } else {
+        shown_sec = 0;
+        timer_color = id(off_element);
+      }
+
+      // Is any program actively running?
+      bool program_active = (state != 0);
+
+      // ═══════════════════════════════════════════════════════════
+      // SVG GROUP TRANSFORM: translate(54, 28.30137)
+      // All oven elements offset by this amount
+      // ═══════════════════════════════════════════════════════════
+      const int tx = 54;
+      const int ty = 28;
+
+      // Offsets to fine-tune oven position
+      const int oven_x_offset = 10;  // Horizontal offset (move right)
+      const int oven_y_offset = -15; // Vertical offset (move up to center)
+
+      // ═══════════════════════════════════════════════════════════
+      // OVEN RECTANGLE (with rounded corners)
+      // SVG: x=74.95, y=42.93, w=170.09, h=154.13, rx/ry=30.82
+      // ═══════════════════════════════════════════════════════════
+        Color oven_color = aux_color(light_ssr, any_active, any_draft);
+      int oven_x = 75 + tx + oven_x_offset;     // 129 + offset
+      int oven_y = 43 + ty + oven_y_offset;     // 71 + offset
+      int oven_w = 170;
+      int oven_h = 154;
+      int corner_r = 31;
+
+      // Draw oven_color rounded rectangle (4px stroke)
+      // Straight edges
+      it.line(oven_x + corner_r, oven_y, oven_x + oven_w - corner_r, oven_y, oven_color);
+      it.line(oven_x + corner_r, oven_y + 1, oven_x + oven_w - corner_r, oven_y + 1, oven_color);
+      it.line(oven_x + corner_r, oven_y + 2, oven_x + oven_w - corner_r, oven_y + 2, oven_color);
+
+      it.line(oven_x + corner_r, oven_y + oven_h, oven_x + oven_w - corner_r, oven_y + oven_h, oven_color);
+      it.line(oven_x + corner_r, oven_y + oven_h - 1, oven_x + oven_w - corner_r, oven_y + oven_h - 1, oven_color);
+      it.line(oven_x + corner_r, oven_y + oven_h - 2, oven_x + oven_w - corner_r, oven_y + oven_h - 2, oven_color);
+
+      it.line(oven_x, oven_y + corner_r, oven_x, oven_y + oven_h - corner_r, oven_color);
+      it.line(oven_x + 1, oven_y + corner_r, oven_x + 1, oven_y + oven_h - corner_r, oven_color);
+      it.line(oven_x + 2, oven_y + corner_r, oven_x + 2, oven_y + oven_h - corner_r, oven_color);
+
+      it.line(oven_x + oven_w, oven_y + corner_r, oven_x + oven_w, oven_y + oven_h - corner_r, oven_color);
+      it.line(oven_x + oven_w - 1, oven_y + corner_r, oven_x + oven_w - 1, oven_y + oven_h - corner_r, oven_color);
+      it.line(oven_x + oven_w - 2, oven_y + corner_r, oven_x + oven_w - 2, oven_y + oven_h - corner_r, oven_color);
+
+      // Rounded corners - draw only the arc quadrants using angles
+      for (int r = corner_r - 2; r <= corner_r; r++) {
+        // Top-left corner: 180° to 270°
+        for (int angle = 180; angle <= 270; angle += 2) {
+          int x = oven_x + corner_r + (int)(r * cos(angle * 3.14159 / 180));
+          int y = oven_y + corner_r + (int)(r * sin(angle * 3.14159 / 180));
+          it.draw_pixel_at(x, y, oven_color);
+        }
+        // Top-right corner: 270° to 360°
+        for (int angle = 270; angle <= 360; angle += 2) {
+          int x = oven_x + oven_w - corner_r + (int)(r * cos(angle * 3.14159 / 180));
+          int y = oven_y + corner_r + (int)(r * sin(angle * 3.14159 / 180));
+          it.draw_pixel_at(x, y, oven_color);
+        }
+        // Bottom-left corner: 90° to 180°
+        for (int angle = 90; angle <= 180; angle += 2) {
+          int x = oven_x + corner_r + (int)(r * cos(angle * 3.14159 / 180));
+          int y = oven_y + oven_h - corner_r + (int)(r * sin(angle * 3.14159 / 180));
+          it.draw_pixel_at(x, y, oven_color);
+        }
+        // Bottom-right corner: 0° to 90°
+        for (int angle = 0; angle <= 90; angle += 2) {
+          int x = oven_x + oven_w - corner_r + (int)(r * cos(angle * 3.14159 / 180));
+          int y = oven_y + oven_h - corner_r + (int)(r * sin(angle * 3.14159 / 180));
+          it.draw_pixel_at(x, y, oven_color);
+        }
+      }
+
+      // ═══════════════════════════════════════════════════════════
+      // TOP HEATING ELEMENT (6px thick with rounded caps)
+      // Color: yellow when ON, red when heating, gray when OFF
+      // ═══════════════════════════════════════════════════════════
+      for (int i = 0; i < 5; i++) {
+        it.line(151 + oven_x_offset, 86 + i + oven_y_offset, 277 + oven_x_offset, 86 + i + oven_y_offset, top_color);
+      }
+      // Rounded caps at both ends
+      it.filled_circle(151 + oven_x_offset, 88 + oven_y_offset, 2, top_color);  // Left cap
+      it.filled_circle(277 + oven_x_offset, 88 + oven_y_offset, 2, top_color);  // Right cap
+
+      // ═══════════════════════════════════════════════════════════
+      // GRILL ZIGZAG PATTERN (gray, 6px stroke)
+      // SVG: 8 zigzag paths starting at y=68.76+28.3=97
+      // ═══════════════════════════════════════════════════════════
+      int zigzag_y = 97 + oven_y_offset;
+      int zigzag_start_x = 150 + oven_x_offset;
+
+      for (int i = 0; i < 8; i++) {
+        int x_base = zigzag_start_x + (i * 16);
+        // Each zigzag: up 8px right, down 14px, down 8px right
+        for (int t = 0; t < 3; t++) {  // 3px thick lines
+          it.line(x_base + t, zigzag_y, x_base + 8 + t, zigzag_y + 14, grill_color);
+          it.line(x_base + 8 + t, zigzag_y + 14, x_base + 16 + t, zigzag_y, grill_color);
+        }
+      }
+
+      // ═══════════════════════════════════════════════════════════
+      // FAN - filled gray circle with black blades and center
+      // Centered horizontally in oven, below grill
+      // ═══════════════════════════════════════════════════════════
+      int fan_x = oven_x + oven_w / 2;      // 214 (centered)
+      int fan_y = 155 + oven_y_offset;  // Centered vertically in oven
+
+      // Fill fan circle with appropriate color (yellow when ON, gray when OFF)
+      it.filled_circle(fan_x, fan_y, 37, fan_color);
+
+      // Animate fan blades only when fan SSR is ON
+      static int fan_angle = 0;
+      if (fan_ssr) {
+        fan_angle = (fan_angle + 8) % 360;  // Rotate 8 degrees per frame
+      }
+
+
+      // Calculate rotated blade endpoints
+      float angle_rad = fan_angle * 3.14159 / 180.0;
+      float cos_a = cos(angle_rad);
+      float sin_a = sin(angle_rad);
+
+      // Original blade 1 endpoints: (-34, -20) to (34, 20)
+      int x1_start = fan_x + (int)(-34 * cos_a - (-20) * sin_a);
+      int y1_start = fan_y + (int)(-34 * sin_a + (-20) * cos_a);
+      int x1_end = fan_x + (int)(34 * cos_a - 20 * sin_a);
+      int y1_end = fan_y + (int)(34 * sin_a + 20 * cos_a);
+
+      // Original blade 2 endpoints: (-20, 34) to (20, -34) (perpendicular)
+      int x2_start = fan_x + (int)(-20 * cos_a - 34 * sin_a);
+      int y2_start = fan_y + (int)(-20 * sin_a + 34 * cos_a);
+      int x2_end = fan_x + (int)(20 * cos_a - (-34) * sin_a);
+      int y2_end = fan_y + (int)(20 * sin_a + (-34) * cos_a);
+
+      // Draw background-colored X-pattern blades with consistent 8px thickness
+      // Use circles along the line to create consistent thick lines
+
+      // Blade 1: draw circles along the line from start to end
+      for (float t = 0; t <= 1.0; t += 0.05) {
+        int x = x1_start + (int)((x1_end - x1_start) * t);
+        int y = y1_start + (int)((y1_end - y1_start) * t);
+        it.filled_circle(x, y, 4, id(background_color));  // radius 4 = 8px diameter
+      }
+
+      // Blade 2: draw circles along the line from start to end
+      for (float t = 0; t <= 1.0; t += 0.05) {
+        int x = x2_start + (int)((x2_end - x2_start) * t);
+        int y = y2_start + (int)((y2_end - y2_start) * t);
+        it.filled_circle(x, y, 4, id(background_color));  // radius 4 = 8px diameter
+      }
+
+      // Background-colored center circle (motor hub)
+      it.filled_circle(fan_x, fan_y, 14, id(background_color));
+      it.filled_circle(fan_x, fan_y, 8, fan_color);
+
+      // ═══════════════════════════════════════════════════════════
+      // BOTTOM HEATING ELEMENT (6px thick with rounded caps)
+      // Color: yellow when ON, red when heating, gray when OFF
+      // ═══════════════════════════════════════════════════════════
+      for (int i = 0; i < 5; i++) {
+        it.line(151 + oven_x_offset, 204 + i + oven_y_offset, 277 + oven_x_offset, 204 + i + oven_y_offset, bottom_color);
+      }
+      // Rounded caps at both ends
+      it.filled_circle(151 + oven_x_offset, 206 + oven_y_offset, 2, bottom_color);  // Left cap
+      it.filled_circle(277 + oven_x_offset, 206 + oven_y_offset, 2, bottom_color);  // Right cap
+
+      // ═══════════════════════════════════════════════════════════
+      // TEXT ELEMENTS (exact SVG coordinates)
+      // ═══════════════════════════════════════════════════════════
+
+      // Timer countdown and total - centered vertically
+      // Font sizes: large=27px, small=15px, spacing between=7px
+      // Total height: 27 + 7 + 15 = 49px
+      int time_y_offset = 45;  // Adjust this to fine-tune vertical position
+      int timer_countdown_height = 27;
+      int timer_spacing = 7;
+      int timer_total_height = 15;
+      int timer_block_height = timer_countdown_height + timer_spacing + timer_total_height;
+      int timer_start_y = (it.get_height() - timer_block_height) / 2 + time_y_offset;
+
+      // ═══════════════════════════════════════════════════════════
+      // Light Bulb Icon - top right, left of WiFi
+      // ═══════════════════════════════════════════════════════════
+      int bulb_x = it.get_width() - 60;  // Left of WiFi symbol
+      int bulb_y = 15;                   // Aligned with WiFi
+      Color bulb_color = aux_color(light_ssr, any_active, any_draft);
+
+      // Bulb glass (circle)
+      for (int r = 6; r <= 8; r++) {
+        it.filled_circle(bulb_x, bulb_y, r, bulb_color);
+      }
+
+      // Bulb base/socket (small rectangle)
+      for (int i = 0; i < 3; i++) {
+        it.line(bulb_x - 3, bulb_y + 9 + i, bulb_x + 3, bulb_y + 9 + i, bulb_color);
+      }
+
+      // Bulb contact point (bottom line)
+      it.line(bulb_x - 2, bulb_y + 13, bulb_x + 2, bulb_y + 13, bulb_color);
+
+      // ═══════════════════════════════════════════════════════════
+      // Play/Pause Status Icon - left of light bulb
+      // Pause (two bars) = idle, Play (triangle) = running
+      // ═══════════════════════════════════════════════════════════
+      int icon_x = bulb_x - 35;
+      int icon_y = bulb_y + 2;  // Shift down to center with bulb's full extent
+      Color icon_color = program_active ? id(hot_element) : id(selected_element);
+
+      if (program_active) {
+        // Play triangle (pointing right, ~18x22px to match bulb height)
+        for (int dx = 0; dx <= 18; dx++) {
+          int half_h = 11 - (11 * dx / 18);
+          it.line(icon_x + dx, icon_y - half_h, icon_x + dx, icon_y + half_h, icon_color);
+        }
+      } else {
+        // Pause icon (two vertical bars, 5px wide each, 22px tall)
+        it.filled_rectangle(icon_x, icon_y - 11, 5, 22, icon_color);
+        it.filled_rectangle(icon_x + 9, icon_y - 11, 5, 22, icon_color);
+      }
+
+      // ═══════════════════════════════════════════════════════════
+      // WiFi Status Indicator - top right corner
+      // ═══════════════════════════════════════════════════════════
+      int wifi_x = it.get_width() - 25;  // Right side, 25px from edge
+      int wifi_y = 8;                    // Top corner
+
+      if (wifi::global_wifi_component->is_connected()) {
+        // Connected - Traditional WiFi symbol (curved arcs + dot pointing up)
+        int wifi_center_y = wifi_y + 18;  // Bottom center point
+        
+        // Draw dot at bottom center
+        it.filled_circle(wifi_x, wifi_center_y, 2, id(text_color));
+        
+        // Draw 3 concentric arcs using angle-based drawing (pointing upward)
+        // Small arc (innermost)
+        for (int angle = 45; angle <= 135; angle += 3) {
+          float rad = angle * 3.14159 / 180.0;
+          for (int r = 6; r <= 8; r++) {
+            int x = wifi_x + (int)(r * cos(rad));
+            int y = wifi_center_y - (int)(r * sin(rad));
+            it.draw_pixel_at(x, y, id(text_color));
+          }
+        }
+        
+        // Medium arc
+        for (int angle = 45; angle <= 135; angle += 3) {
+          float rad = angle * 3.14159 / 180.0;
+          for (int r = 11; r <= 13; r++) {
+            int x = wifi_x + (int)(r * cos(rad));
+            int y = wifi_center_y - (int)(r * sin(rad));
+            it.draw_pixel_at(x, y, id(text_color));
+          }
+        }
+        
+        // Large arc (outermost)
+        for (int angle = 45; angle <= 135; angle += 3) {
+          float rad = angle * 3.14159 / 180.0;
+          for (int r = 16; r <= 18; r++) {
+            int x = wifi_x + (int)(r * cos(rad));
+            int y = wifi_center_y - (int)(r * sin(rad));
+            it.draw_pixel_at(x, y, id(text_color));
+          }
+        }
+      } else if (wifi::global_wifi_component->has_ap()) {
+        // AP Mode - Circle with 4 radiating dots (broadcasting)
+        it.filled_circle(wifi_x, wifi_y + 8, 5, id(on_element));              // Center circle
+        it.filled_circle(wifi_x - 12, wifi_y + 8, 2, id(on_element));         // Left dot
+        it.filled_circle(wifi_x + 12, wifi_y + 8, 2, id(on_element));         // Right dot
+        it.filled_circle(wifi_x, wifi_y - 4, 2, id(on_element));              // Top dot
+        it.filled_circle(wifi_x, wifi_y + 20, 2, id(on_element));             // Bottom dot
+      } else {
+        // Disconnected - X symbol
+        // Draw thick X with multiple lines
+        for (int i = 0; i < 3; i++) {
+          it.line(wifi_x - 10, wifi_y + i, wifi_x + 10, wifi_y + 16 + i, id(hot_element));      // Top-left to bottom-right
+          it.line(wifi_x - 10, wifi_y + 16 + i, wifi_x + 10, wifi_y + i, id(hot_element));      // Bottom-left to top-right
+        }
+      }
+
+      if (program_active) {
+        // ═══ RUNNING: show active countdown ═══
+        if (id(timer_state) == 2) {
+          it.print(62, timer_start_y, id(font_normal), timer_color,
+                   TextAlign::TOP_CENTER, "PREHEATING");
+        } else if (id(timer_state) == 3) {
+          it.print(62, timer_start_y, id(font_normal), id(on_element),
+                   TextAlign::TOP_CENTER, "OVEN READY");
+          it.print(62, timer_start_y + timer_countdown_height + timer_spacing,
+                   id(font_small), id(text_color), TextAlign::TOP_CENTER,
+                   "Press to start");
+        } else {
+          int hours = shown_sec / 3600;
+          int rem_sec = shown_sec % 3600;
+          int mins = rem_sec / 60;
+          int secs = rem_sec % 60;
+          it.printf(62, timer_start_y, id(font_large), timer_color,
+                    TextAlign::TOP_CENTER, "%02d:%02d:%02d", hours, mins, secs);
+        }
+        // Total programmed cook time (skip in ready state -- sub-message already shown)
+        if (id(timer_state) == 3) {
+          // Already displayed "Press to start" above
+        } else if (id(cook_total_seconds) <= 0) {
+          it.print(62, timer_start_y + timer_countdown_height + timer_spacing,
+                   id(font_small), id(text_color), TextAlign::TOP_CENTER,
+                   "NO TIMER");
+        } else {
+          int total_sec = id(cook_total_seconds);
+          if (total_sec < 0) total_sec = 0;
+          int t_hours = total_sec / 3600;
+          int t_rem = total_sec % 3600;
+          int t_mins = t_rem / 60;
+          int t_secs = t_rem % 60;
+          it.printf(62, timer_start_y + timer_countdown_height + timer_spacing,
+                    id(font_small), id(text_color), TextAlign::TOP_CENTER,
+                    "%02d:%02d:%02d", t_hours, t_mins, t_secs);
+        }
+        // Draft change indicator (when draft differs from active)
+        bool temp_diff = ((int)id(working_temperature) != (int)target);
+        bool time_diff = ((int)(id(working_timer) * 60.0f) != id(cook_total_seconds));
+        if (temp_diff || time_diff) {
+          int draft_y = timer_start_y + timer_countdown_height + timer_spacing + timer_total_height + 6;
+          it.printf(62, draft_y, id(font_small), id(selected_element),
+                    TextAlign::TOP_CENTER, "Draft: %.0f°C", id(working_temperature));
+        }
+      } else {
+        // ═══ IDLE: show draft values in white ═══
+        float draft_dur = id(working_timer);
+        if (draft_dur > 0) {
+          int d_total = (int)(draft_dur * 60.0f);
+          int dh = d_total / 3600;
+          int dr = d_total % 3600;
+          int dm = dr / 60;
+          int ds = dr % 60;
+          it.printf(62, timer_start_y, id(font_large), id(selected_element),
+                    TextAlign::TOP_CENTER, "%02d:%02d:%02d", dh, dm, ds);
+        } else {
+          it.print(62, timer_start_y, id(font_normal), id(selected_element),
+                   TextAlign::TOP_CENTER, "NO TIMER");
+        }
+        // Show draft delay
+        float draft_del = id(working_start_delay);
+        if (draft_del > 0) {
+          int del_h = (int)draft_del / 60;
+          int del_m = (int)draft_del % 60;
+          it.printf(62, timer_start_y + timer_countdown_height + timer_spacing,
+                    id(font_small), id(selected_element), TextAlign::TOP_CENTER,
+                    "Delay: %02d:%02d", del_h, del_m);
+        } else {
+          it.print(62, timer_start_y + timer_countdown_height + timer_spacing,
+                   id(font_small), id(selected_element), TextAlign::TOP_CENTER,
+                   "Start: Now");
+        }
+      }
+
+      // Knob role labels at the very bottom
+      int bottom_y = it.get_height() - 4;
+      it.print(10, bottom_y, id(font_small), id(text_color),
+               TextAlign::BOTTOM_LEFT, "TIME");
+      it.print(it.get_width() / 2, bottom_y, id(font_small), id(text_color),
+               TextAlign::BOTTOM_CENTER, "MODE");
+      it.print(it.get_width() - 10, bottom_y, id(font_small), id(text_color),
+               TextAlign::BOTTOM_RIGHT, "TEMP");
+
+      // ═══════════════════════════════════════════════════════════
+      // Temperature display - above timer
+      // ═══════════════════════════════════════════════════════════
+      int temp_spacing = 35;
+      int current_temp_y = timer_start_y - temp_spacing;
+      int target_temp_y = current_temp_y - 7 - 41;
+
+        // Main temp: active when running, draft when idle
+        float main_temp = program_active ? target : id(working_temperature);
+        Color main_temp_color = program_active ? id(text_color) : id(selected_element);
+        it.printf(62, target_temp_y, id(font_xlarge), main_temp_color, TextAlign::TOP_CENTER, "%.0f°C", main_temp);
+
+        // Current real temp (small, yellow) - below main temp
+        it.printf(62, current_temp_y, id(font_small), id(hot_element), TextAlign::TOP_CENTER, "%.0f°C", current_temp);
+      }
+
+      // ═══════════════════════════════════════════════════════════
+      // PAGE 1: TIMER SCREEN
+      // - First step: set duration (\"No timer\" → HH:MM)
+      // - Second step: set start delay (\"Now\" → HH:MM)
+      //   timer_edit_phase: 0 = editing duration, 1 = editing start delay
+      // ═══════════════════════════════════════════════════════════
+      else if (page == 1) {
+        float duration_min = id(working_timer);
+        float delay_min = id(working_start_delay);
+        bool editing_duration = (id(timer_edit_phase) == 0);
+        bool program_running = id(timer_state) >= 1;
+
+        int cx = it.get_width() / 2;
+
+        // Title
+        it.print(cx, 8, id(font_normal), id(text_color),
+                 TextAlign::TOP_CENTER, program_running ? "EDIT TIMER" : "SET TIMER");
+
+        // Helper lambda to print minutes as HH:MM
+        auto print_time = [&](int x, int y, float minutes, bool active) {
+          if (minutes <= 0.0f) return;
+          int total = (int) minutes;
+          if (total < 0) total = 0;
+          if (total > 23 * 60 + 59) total = 23 * 60 + 59;
+          int hours = total / 60;
+          int mins = total % 60;
+          Color col = active ? id(on_element) : id(text_color);
+          it.printf(x, y, id(font_large), col, TextAlign::TOP_CENTER, "%02d:%02d", hours, mins);
+        };
+
+        // Duration block
+        {
+          Color label_color = editing_duration ? id(on_element) : id(text_color);
+          it.print(cx, 40, id(font_small), label_color,
+                   TextAlign::TOP_CENTER, "DURATION");
+
+          if (duration_min <= 0.0f) {
+            Color col = editing_duration ? id(on_element) : id(off_element);
+            it.print(cx, 68, id(font_large), col,
+                     TextAlign::TOP_CENTER, "NO TIMER");
+          } else {
+            print_time(cx, 68, duration_min, editing_duration);
+          }
+        }
+
+        // Start time block (delay) - LOCKED when program is running
+        {
+          bool delay_locked = program_running;
+          bool editing_start = !editing_duration && !delay_locked;
+          Color label_color = delay_locked ? id(off_element) : (editing_start ? id(on_element) : id(text_color));
+          it.print(cx, 120, id(font_small), label_color,
+                   TextAlign::TOP_CENTER, delay_locked ? "DELAY (LOCKED)" : "WHEN TO START");
+
+          if (delay_min <= 0.0f) {
+            Color col = editing_start ? id(on_element) : id(off_element);
+            it.print(cx, 148, id(font_large), col,
+                     TextAlign::TOP_CENTER, "NOW");
+          } else {
+            Color col = delay_locked ? id(off_element) : (editing_start ? id(on_element) : id(text_color));
+            int total = (int) delay_min;
+            if (total < 0) total = 0;
+            int hours = total / 60;
+            int mins = total % 60;
+            it.printf(cx, 148, id(font_large), col, TextAlign::TOP_CENTER, "%02d:%02d", hours, mins);
+          }
+        }
+
+        // Instructions at bottom
+        const char* msg;
+        if (program_running) {
+          msg = "Rotate to adjust duration - Press to done";
+        } else if (editing_duration) {
+          msg = "Rotate to set duration - Press to set start";
+        } else {
+          msg = "Rotate to set start - Press to done";
+        }
+        it.print(cx, it.get_height() - 8, id(font_small), id(off_element),
+                 TextAlign::BOTTOM_CENTER, msg);
+      }
+
+      // ═══════════════════════════════════════════════════════════
+      // PAGE 2: TEMPERATURE SETTING SCREEN
+      // ═══════════════════════════════════════════════════════════
+      else if (page == 2) {
+        float temp = id(working_temperature);
+        
+        // Title
+        it.print(it.get_width() / 2, 10, id(font_normal), id(text_color), 
+                 TextAlign::TOP_CENTER, "SET TEMPERATURE");
+        
+        // Large temperature value (moved up)
+        it.printf(it.get_width() / 2, 55, id(font_xlarge), id(on_element), 
+                  TextAlign::TOP_CENTER, "%.0f", temp);
+        it.print(it.get_width() / 2, 100, id(font_large), id(on_element), 
+                 TextAlign::TOP_CENTER, "°C");
+        
+        // Temperature range bar (moved up)
+        int bar_x = 40;
+        int bar_y = 145;
+        int bar_width = it.get_width() - 80;
+        int bar_height = 20;
+        
+        // Background bar (outline)
+        it.rectangle(bar_x, bar_y, bar_width, bar_height, id(off_element));
+        
+        // Filled portion based on temperature (0-280°C)
+        float temp_ratio = temp / 280.0;
+        if (temp_ratio > 1.0) temp_ratio = 1.0;
+        if (temp_ratio < 0.0) temp_ratio = 0.0;
+        int fill_width = (int)(bar_width * temp_ratio);
+        if (fill_width > 2) {
+          it.filled_rectangle(bar_x + 2, bar_y + 2, fill_width - 4, bar_height - 4, id(on_element));
+        }
+        
+        // Min/Max labels
+        it.print(bar_x, bar_y + bar_height + 8, id(font_small), id(text_color), 
+                 TextAlign::TOP_LEFT, "0°C");
+        it.print(bar_x + bar_width, bar_y + bar_height + 8, id(font_small), id(text_color), 
+                 TextAlign::TOP_RIGHT, "280°C");
+        
+        // Instructions at bottom
+        it.print(it.get_width() / 2, it.get_height() - 10, id(font_small), id(off_element), 
+                 TextAlign::BOTTOM_CENTER, "Rotate to adjust - Press to confirm");
+      }
+
+      // ═══════════════════════════════════════════════════════════
+      // PAGE 3: MODE SCREEN - Element Selection
+      // ═══════════════════════════════════════════════════════════
+      else if (page == 3) {
+        // Get desired element selection (independent of actual SSR state)
+        bool top_on = id(desired_top_element);
+        bool bottom_on = id(desired_bottom_element);
+        bool grill_on = id(desired_grill_element);
+        bool fan_on = id(desired_fan_element);
+        
+        // Title
+        it.print(it.get_width() / 2, 10, id(font_normal), id(text_color), 
+                 TextAlign::TOP_CENTER, "SELECT ELEMENTS");
+        
+        // Element list with toggle indicators
+        int start_y = 40;
+        int line_height = 32;
+        int x_left = 20;
+        int x_right = it.get_width() - 20;
+        int selected = id(mode_selected_element);
+        
+        // Selection indicator (arrow)
+        int arrow_x = 5;
+        int arrow_y = start_y + (selected * line_height) + 10;
+        it.print(arrow_x, arrow_y, id(font_normal), id(on_element), TextAlign::CENTER, ">");
+        
+        // Top Element
+        Color top_text_color = (selected == 0) ? id(on_element) : id(text_color);
+        it.print(x_left, start_y, id(font_normal), top_text_color, TextAlign::TOP_LEFT, "Top Element");
+        Color top_color = top_on ? id(on_element) : id(off_element);
+        it.print(x_right, start_y, id(font_normal), top_color, TextAlign::TOP_RIGHT, top_on ? "ON" : "OFF");
+        
+        // Bottom Element
+        Color bottom_text_color = (selected == 1) ? id(on_element) : id(text_color);
+        it.print(x_left, start_y + line_height, id(font_normal), bottom_text_color, TextAlign::TOP_LEFT, "Bottom Element");
+        Color bottom_color = bottom_on ? id(on_element) : id(off_element);
+        it.print(x_right, start_y + line_height, id(font_normal), bottom_color, TextAlign::TOP_RIGHT, bottom_on ? "ON" : "OFF");
+        
+        // Grill Element
+        Color grill_text_color = (selected == 2) ? id(on_element) : id(text_color);
+        it.print(x_left, start_y + line_height * 2, id(font_normal), grill_text_color, TextAlign::TOP_LEFT, "Grill");
+        Color grill_color = grill_on ? id(on_element) : id(off_element);
+        it.print(x_right, start_y + line_height * 2, id(font_normal), grill_color, TextAlign::TOP_RIGHT, grill_on ? "ON" : "OFF");
+        
+        // Fan
+        Color fan_text_color = (selected == 3) ? id(on_element) : id(text_color);
+        it.print(x_left, start_y + line_height * 3, id(font_normal), fan_text_color, TextAlign::TOP_LEFT, "Fan");
+        Color fan_color = fan_on ? id(on_element) : id(off_element);
+        it.print(x_right, start_y + line_height * 3, id(font_normal), fan_color, TextAlign::TOP_RIGHT, fan_on ? "ON" : "OFF");
+        
+        // Back option (not toggleable)
+        Color back_text_color = (selected == 4) ? id(on_element) : id(text_color);
+        it.print(x_left, start_y + line_height * 4, id(font_normal), back_text_color, TextAlign::TOP_LEFT, "Back");
+        it.print(x_right, start_y + line_height * 4, id(font_normal), id(text_color), TextAlign::TOP_RIGHT, "Press");
+      }
+
+      // ═══════════════════════════════════════════════════════════
+      // PAGE 4: APPLY CONFIRMATION SCREEN
+      // ═══════════════════════════════════════════════════════════
+      else if (page == 4) {
+        int cx = it.get_width() / 2;
+        bool running = id(timer_state) != 0;
+
+        it.print(cx, 10, id(font_normal), id(on_element),
+                 TextAlign::TOP_CENTER, running ? "UPDATE PROGRAM?" : "START PROGRAM?");
+
+        // Draft summary
+        int y = 42;
+        it.printf(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER,
+                  "Temperature: %.0f C", id(working_temperature));
+        y += 20;
+
+        float dur = id(working_timer);
+        if (dur > 0) {
+          int h = (int)dur / 60;
+          int m = (int)dur % 60;
+          it.printf(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER,
+                    "Duration: %02d:%02d", h, m);
+        } else {
+          it.print(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Duration: NO TIMER");
+        }
+        y += 20;
+
+        if (!running) {
+          float del = id(working_start_delay);
+          if (del > 0) {
+            int dh = (int)del / 60;
+            int dm = (int)del % 60;
+            it.printf(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER,
+                      "Delay: %02d:%02d", dh, dm);
+          } else {
+            it.print(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Delay: NOW");
+          }
+          y += 20;
+        } else {
+          // Show time delta for running program
+          int new_total = (int)(id(working_timer) * 60.0f);
+          int delta_sec = new_total - id(cook_total_seconds);
+          if (delta_sec != 0) {
+            int abs_d = delta_sec < 0 ? -delta_sec : delta_sec;
+            int dm = abs_d / 60;
+            int ds = abs_d % 60;
+            char sign = delta_sec > 0 ? '+' : '-';
+            it.printf(cx, y, id(font_small), id(hot_element), TextAlign::TOP_CENTER,
+                      "Time change: %c%d:%02d", sign, dm, ds);
+          } else {
+            it.print(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Time: no change");
+          }
+          y += 20;
+        }
+
+        // Element summary
+        char elems[32] = "";
+        if (id(desired_top_element)) strcat(elems, "Top ");
+        if (id(desired_bottom_element)) strcat(elems, "Bot ");
+        if (id(desired_grill_element)) strcat(elems, "Grl ");
+        if (id(desired_fan_element)) strcat(elems, "Fan ");
+        if (strlen(elems) == 0) strcpy(elems, "None");
+        it.printf(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Elements: %s", elems);
+
+        // Instructions at bottom
+        it.print(cx, it.get_height() - 28, id(font_normal), id(on_element),
+                 TextAlign::BOTTOM_CENTER, "Press TIME to confirm");
+        it.print(cx, it.get_height() - 8, id(font_small), id(off_element),
+                 TextAlign::BOTTOM_CENTER, "Any other to cancel");
+      }
+
+      // ═══════════════════════════════════════════════════════════
+      // PAGE 5: CANCEL CONFIRMATION SCREEN
+      // ═══════════════════════════════════════════════════════════
+      else if (page == 5) {
+        int cx = it.get_width() / 2;
+        int cy = it.get_height() / 2;
+
+        it.print(cx, cy - 40, id(font_large), id(on_element),
+                 TextAlign::CENTER, "CANCEL");
+        it.print(cx, cy - 10, id(font_large), id(on_element),
+                 TextAlign::CENTER, "PROGRAM?");
+
+        it.print(cx, it.get_height() - 28, id(font_normal), id(on_element),
+                 TextAlign::BOTTOM_CENTER, "Press MODE to confirm");
+        it.print(cx, it.get_height() - 8, id(font_small), id(off_element),
+                 TextAlign::BOTTOM_CENTER, "Any other to cancel");
+      }
+
+font:
+  - file: "gfonts://Share Tech Mono"
+    id: font_small
+    size: 15 # SVG: 14.66px
+    glyphs: "!?\"%()+,-_.:°*^0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz/\\[]"
+
+  - file: "gfonts://Share Tech Mono"
+    id: font_normal
+    size: 19 # SVG: 18.66px
+    glyphs: "!?\"%()+,-_.:°*^<>0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz/\\[]"
+
+  - file: "gfonts://Share Tech Mono"
+    id: font_large
+    size: 27 # SVG: 26.66px (timer countdown)
+    # Note: don't duplicate 'C' (it's already in A-Z)
+    glyphs: "?:°0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ "
+
+  - file: "gfonts://Share Tech Mono"
+    id: font_xlarge
+    size: 41 # SVG: 40.72px (target temperature)
+    glyphs: ".°C0123456789"
+
+# Global variables for page management and sleep
+globals:
+  - id: current_page
+    type: int
+    restore_value: no
+    initial_value: "0" # 0=main, 1=timer, 2=temperature, 3=mode, 4=apply confirm, 5=cancel confirm
+
+  - id: last_activity_time
+    type: unsigned long
+    restore_value: no
+    initial_value: "0"
+
+  - id: screen_sleeping
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+  # Current oven cavity temperature (updated from MAX31865 PT100 RTD).
+  - id: current_oven_temp
+    type: float
+    restore_value: no
+    initial_value: "20.0"
+
+  # Working values - only updated when on correct page
+  - id: working_temperature
+    type: float
+    restore_value: yes
+    initial_value: "200.0"
+
+  - id: working_timer
+    type: float
+    restore_value: yes
+    initial_value: "0.0"
+
+  # Timer start delay (minutes). 0 = Now
+  - id: working_start_delay
+    type: float
+    restore_value: yes
+    initial_value: "0.0"
+
+  # Timer runtime state machine
+  # 0 = idle, 1 = waiting (delay before cook), 2 = preheating, 3 = ready, 4 = cooking
+  - id: timer_state
+    type: int
+    restore_value: no
+    initial_value: "0"
+
+  # Last observed timer_state used to detect program phase transitions.
+  - id: last_timer_state_observed
+    type: int
+    restore_value: no
+    initial_value: "0"
+
+  # Remaining seconds for delay and cooking phases (for main screen)
+  - id: timer_delay_remaining
+    type: int
+    restore_value: no
+    initial_value: "0"
+
+  - id: timer_cook_remaining
+    type: int
+    restore_value: yes
+    initial_value: "0"
+
+  # Preheat timeout tuning:
+  #  - 0 disables timeout
+  #  - >0 forces transition to COOKING after this many minutes in PREHEATING
+  - id: preheat_timeout_minutes
+    type: float
+    restore_value: yes
+    initial_value: "20.0"
+
+  # Runtime counter for current preheat phase duration.
+  - id: preheat_elapsed_seconds
+    type: int
+    restore_value: no
+    initial_value: "0"
+
+  - id: pid_heat_was_active
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+  # Cooling fan (light relay) stays on until temp drops below this threshold
+  - id: cooldown_temp_threshold
+    type: float
+    restore_value: yes
+    initial_value: "50.0"
+
+  # Total programmed cook time in seconds (for display only)
+  - id: cook_total_seconds
+    type: int
+    restore_value: yes
+    initial_value: "0"
+
+  # Timer page edit phase: 0 = duration, 1 = start delay
+  - id: timer_edit_phase
+    type: int
+    restore_value: no
+    initial_value: "0"
+
+  - id: working_mode
+    type: float
+    restore_value: yes
+    initial_value: "0.0"
+
+  # Mode screen: selected element index (0=Top, 1=Bottom, 2=Grill, 3=Fan, 4=Back)
+  - id: mode_selected_element
+    type: int
+    restore_value: no
+    initial_value: "0"
+
+  # Active temperature target (set only via apply_program, used by runtime loop)
+  - id: active_temperature
+    type: float
+    restore_value: yes
+    initial_value: "0.0"
+
+  # Desired element selection from mode screen (separate from actual SSR state)
+  - id: desired_top_element
+    type: bool
+    restore_value: yes
+    initial_value: "false"
+
+  - id: desired_bottom_element
+    type: bool
+    restore_value: yes
+    initial_value: "false"
+
+  - id: desired_grill_element
+    type: bool
+    restore_value: yes
+    initial_value: "false"
+
+  - id: desired_fan_element
+    type: bool
+    restore_value: yes
+    initial_value: "false"
+
+  # Active element selection (set only via apply_program, used by runtime loop)
+  - id: active_top_element
+    type: bool
+    restore_value: yes
+    initial_value: "false"
+
+  - id: active_bottom_element
+    type: bool
+    restore_value: yes
+    initial_value: "false"
+
+  - id: active_grill_element
+    type: bool
+    restore_value: yes
+    initial_value: "false"
+
+  - id: active_fan_element
+    type: bool
+    restore_value: yes
+    initial_value: "false"
+
+# Sensors
+sensor:
+  # Uptime sensor
+  - platform: uptime
+    id: uptime_sec
+    name: "Uptime"
+    update_interval: 1s
+
+  # MAX31865 PT100 RTD (oven temperature)
+  # PT100 RTD via MAX31865 - reads every 500ms for faster response.
+  # The MAX31865 has built-in noise rejection and 50Hz mains filtering,
+  # so only light smoothing is needed compared to the old K-type thermocouple.
+  - platform: max31865
+    id: oven_temperature
+    name: "RTD Temperature"
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    cs_pin: GPIO17
+    spi_id: spi_max31865
+    update_interval: 1s
+    reference_resistance: 430 Ω
+    rtd_nominal_resistance: 100 Ω
+    rtd_wires: 3
+    mains_filter: 50Hz
+    filters:
+      - lambda: |-
+          if (std::isnan(x) || x < 1.0f || x > 350.0f) return {};
+          return x;
+      - median:
+          window_size: 5
+          send_every: 1
+          send_first_at: 1
+    on_value:
+      then:
+        - lambda: |-
+            id(current_oven_temp) = x;
+
+  # Runtime temperature exposed to HA as the current oven temperature.
+  # Fed by MAX31865 PT100 via current_oven_temp global.
+  - platform: template
+    id: runtime_temperature
+    name: "Oven Temperature"
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    update_interval: 1s
+    lambda: |-
+      return id(current_oven_temp);
+
+  # Expose timer state as numeric code for automations/frontend:
+  # 0=idle, 1=waiting, 2=preheating, 3=ready, 4=cooking
+  - platform: template
+    id: timer_state_code
+    name: "Timer State Code"
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return id(timer_state);
+
+  - platform: template
+    id: timer_delay_remaining_seconds
+    name: "Delay Remaining Seconds"
+    unit_of_measurement: "s"
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return id(timer_delay_remaining);
+
+  - platform: template
+    id: timer_cook_remaining_seconds
+    name: "Cook Remaining Seconds"
+    unit_of_measurement: "s"
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return id(timer_cook_remaining);
+
+  - platform: template
+    id: timer_active_countdown_seconds
+    name: "Active Countdown Seconds"
+    unit_of_measurement: "s"
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      int state = id(timer_state);
+      if (state == 1 || state == 2) return id(timer_delay_remaining);
+      if (state == 3 || state == 4) return id(timer_cook_remaining);
+      return 0;
+
+  # ── Element visual-state sensors for HA frontend SVG ──
+  # 0 = gray (off), 1 = white (draft/selected), 2 = yellow (armed/active-aux), 3 = red (SSR on/heating)
+  - platform: template
+    id: ha_top_element_state
+    name: "Top Element State"
+    icon: "mdi:radiator"
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      bool ssr = id(top_element_relay).state;
+      bool active = id(active_top_element);
+      bool draft = id(desired_top_element);
+      bool any_heating = id(active_top_element) || id(active_bottom_element) || id(active_grill_element);
+      float target = id(active_temperature);
+      bool allow_heat = (target > 0.0f && any_heating) &&
+        (id(timer_state) == 2 || id(timer_state) == 3 || id(timer_state) == 4);
+      if (ssr)                    return 3;  // red
+      if (allow_heat && active)   return 2;  // yellow
+      if (draft || active)        return 1;  // white
+      return 0;                              // gray
+
+  - platform: template
+    id: ha_bottom_element_state
+    name: "Bottom Element State"
+    icon: "mdi:radiator"
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      bool ssr = id(bottom_element_relay).state;
+      bool active = id(active_bottom_element);
+      bool draft = id(desired_bottom_element);
+      bool any_heating = id(active_top_element) || id(active_bottom_element) || id(active_grill_element);
+      float target = id(active_temperature);
+      bool allow_heat = (target > 0.0f && any_heating) &&
+        (id(timer_state) == 2 || id(timer_state) == 3 || id(timer_state) == 4);
+      if (ssr)                    return 3;  // red
+      if (allow_heat && active)   return 2;  // yellow
+      if (draft || active)        return 1;  // white
+      return 0;                              // gray
+
+  - platform: template
+    id: ha_grill_element_state
+    name: "Grill Element State"
+    icon: "mdi:grill"
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      bool ssr = id(grill_element_relay).state;
+      bool active = id(active_grill_element);
+      bool draft = id(desired_grill_element);
+      bool any_heating = id(active_top_element) || id(active_bottom_element) || id(active_grill_element);
+      float target = id(active_temperature);
+      bool allow_heat = (target > 0.0f && any_heating) &&
+        (id(timer_state) == 2 || id(timer_state) == 3 || id(timer_state) == 4);
+      if (ssr)                    return 3;  // red
+      if (allow_heat && active)   return 2;  // yellow
+      if (draft || active)        return 1;  // white
+      return 0;                              // gray
+
+  - platform: template
+    id: ha_fan_element_state
+    name: "Fan Element State"
+    icon: "mdi:fan"
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      bool ssr = id(fan_relay).state;
+      bool active = id(active_fan_element);
+      bool draft = id(desired_fan_element);
+      if (ssr)                    return 2;  // yellow (aux max)
+      if (draft || active)        return 1;  // white
+      return 0;                              // gray
+
+  - platform: template
+    id: ha_frame_state
+    name: "Oven Frame State"
+    icon: "mdi:rectangle-outline"
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      bool any_ssr = id(top_element_relay).state || id(bottom_element_relay).state ||
+                     id(grill_element_relay).state || id(fan_relay).state;
+      bool light_ssr = id(light_relay).state || any_ssr;
+      bool any_draft = id(desired_top_element) || id(desired_bottom_element) ||
+                       id(desired_grill_element) || id(desired_fan_element);
+      bool any_active = id(active_top_element) || id(active_bottom_element) ||
+                        id(active_grill_element) || id(active_fan_element);
+      if (light_ssr)              return 2;  // yellow
+      if (any_draft || any_active) return 1; // white
+      return 0;                              // gray
+
+  # Temperature Encoder (GPIO41, GPIO42)
+  - platform: rotary_encoder
+    id: encoder_temperature
+    name: "Temperature Encoder"
+    internal: true
+    pin_a:
+      number: GPIO42
+      mode: INPUT_PULLUP
+    pin_b:
+      number: GPIO41
+      mode: INPUT_PULLUP
+    resolution: 2
+    # Use a large range so clamping never stops delta detection;
+    # we still clamp working_temperature itself to 0–280°C.
+    min_value: -32768
+    max_value: 32767
+    publish_initial_value: true
+    on_value:
+      then:
+        - lambda: |-
+            // Ignore encoder input during startup splash
+            if (millis() < 12000) return;
+
+            bool was_sleeping = id(screen_sleeping);
+            id(wake_screen).execute();
+
+            static float last_val = x;
+            float delta = x - last_val;
+            last_val = x;
+            if (delta == 0) return;
+
+            // If screen was sleeping, just wake it - don't navigate or adjust
+            if (was_sleeping) return;
+
+            int direction = (delta > 0) ? 1 : -1;
+
+            // From main screen: rotate navigates to temperature page
+            if (id(current_page) == 0) {
+              id(current_page) = 2;
+              return;
+            }
+
+            if (id(current_page) == 2) {
+              // On temperature page: fine adjust 1 by 1 (°C)
+              id(working_temperature) += direction * 1;
+              if (id(working_temperature) < 0) id(working_temperature) = 0;
+              if (id(working_temperature) > 280) id(working_temperature) = 280;
+            } else if (id(current_page) == 1) {
+              // On timer page: adjust duration/start in 30 min steps
+              float step = 30.0f;
+              if (id(timer_edit_phase) == 0) {
+                id(working_timer) += direction * step;
+                if (id(working_timer) < 0) id(working_timer) = 0;
+              } else {
+                id(working_start_delay) += direction * step;
+                if (id(working_start_delay) < 0) id(working_start_delay) = 0;
+              }
+            }
+
+  # Timer Encoder (GPIO9, GPIO10)
+  - platform: rotary_encoder
+    id: encoder_timer
+    name: "Timer Encoder"
+    internal: true
+    pin_a:
+      number: GPIO10
+      mode: INPUT_PULLUP
+    pin_b:
+      number: GPIO9
+      mode: INPUT_PULLUP
+    resolution: 4
+    # Use a large range so clamping never stops delta detection
+    min_value: -32768
+    max_value: 32767
+    publish_initial_value: true
+    on_value:
+      then:
+        - lambda: |-
+            // Ignore encoder input during startup splash
+            if (millis() < 12000) return;
+
+            bool was_sleeping = id(screen_sleeping);
+            id(wake_screen).execute();
+
+            static float last_val = x;
+            float delta = x - last_val;
+            last_val = x;
+            if (delta == 0) return;
+
+            // If screen was sleeping, just wake it - don't navigate or adjust
+            if (was_sleeping) return;
+
+            int direction = (delta > 0) ? 1 : -1;
+
+            // From main screen: rotate navigates to timer page
+            if (id(current_page) == 0) {
+              id(current_page) = 1;
+              id(timer_edit_phase) = 0;
+              return;
+            }
+
+            if (id(current_page) == 2) {
+              // On temperature page: change temperature 10 by 10
+              id(working_temperature) += direction * 10;
+              if (id(working_temperature) < 0) id(working_temperature) = 0;
+              if (id(working_temperature) > 280) id(working_temperature) = 280;
+            } else if (id(current_page) == 1) {
+              // On timer page: adjust duration/start in 1 min steps
+              float step = 1.0f;
+              if (id(timer_edit_phase) == 0) {
+                id(working_timer) += direction * step;
+                if (id(working_timer) < 0) id(working_timer) = 0;
+              } else {
+                // Lock delay editing when program is running
+                if (id(timer_state) == 0) {
+                  id(working_start_delay) += direction * step;
+                  if (id(working_start_delay) < 0) id(working_start_delay) = 0;
+                }
+              }
+            }
+
+  # Mode Encoder (GPIO38, GPIO39)
+  # Use a large range so the value never clamps: clamping at 0/10 caused
+  # "one direction not registering" (delta stayed 0 at the boundary).
+  - platform: rotary_encoder
+    id: encoder_mode
+    name: "Mode Encoder"
+    internal: true
+    pin_a:
+      number: GPIO39
+      mode: INPUT_PULLUP
+    pin_b:
+      number: GPIO38
+      mode: INPUT_PULLUP
+    resolution: 2
+    min_value: -32768
+    max_value: 32767
+    publish_initial_value: true
+    on_value:
+      then:
+        - lambda: |-
+            // Ignore encoder input during startup splash
+            if (millis() < 12000) return;
+
+            bool was_sleeping = id(screen_sleeping);
+            id(wake_screen).execute();
+
+            static float last_val = x;
+            float delta = x - last_val;
+            last_val = x;
+            if (delta == 0) return;
+
+            // If screen was sleeping, just wake it - don't navigate or adjust
+            if (was_sleeping) return;
+
+            int direction = (delta > 0) ? 1 : -1;
+
+            // From main screen: rotate navigates to mode page
+            if (id(current_page) == 0) {
+              id(current_page) = 3;
+              return;
+            }
+
+            if (id(current_page) == 2) {
+              // On temperature page: adjust 5 by 5
+              id(working_temperature) += direction * 5;
+              if (id(working_temperature) < 0) id(working_temperature) = 0;
+              if (id(working_temperature) > 280) id(working_temperature) = 280;
+            } else if (id(current_page) == 1) {
+              // On timer page: adjust duration/start in 10 min steps
+              float step = 10.0f;
+              if (id(timer_edit_phase) == 0) {
+                id(working_timer) += direction * step;
+                if (id(working_timer) < 0) id(working_timer) = 0;
+              } else {
+                if (id(timer_state) == 0) {
+                  id(working_start_delay) += direction * step;
+                  if (id(working_start_delay) < 0) id(working_start_delay) = 0;
+                }
+              }
+            } else if (id(current_page) == 3) {
+              // On mode page: navigate through elements
+              id(mode_selected_element) += direction;
+              if (id(mode_selected_element) < 0) id(mode_selected_element) = 4;
+              if (id(mode_selected_element) > 4) id(mode_selected_element) = 0;
+            }
+
+  # Active target temperature (set via apply_program, read-only for HA)
+  - platform: template
+    id: active_temperature_sensor
+    name: "Active Temperature"
+    unit_of_measurement: "°C"
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return id(active_temperature);
+
+  # ── PID tuning readout sensors ──
+  - platform: pid
+    name: "PID Heat Output"
+    type: HEAT
+    climate_id: pid_climate
+
+  - platform: pid
+    name: "PID Proportional"
+    type: PROPORTIONAL
+    climate_id: pid_climate
+
+  - platform: pid
+    name: "PID Integral"
+    type: INTEGRAL
+    climate_id: pid_climate
+
+  - platform: pid
+    name: "PID Derivative"
+    type: DERIVATIVE
+    climate_id: pid_climate
+
+  - platform: pid
+    name: "PID Error"
+    type: ERROR
+    climate_id: pid_climate
+
+  - platform: pid
+    name: "PID Kp"
+    type: KP
+    climate_id: pid_climate
+
+  - platform: pid
+    name: "PID Ki"
+    type: KI
+    climate_id: pid_climate
+
+  - platform: pid
+    name: "PID Kd"
+    type: KD
+    climate_id: pid_climate
+
+# Home Assistant high-level controls (mirror physical UI behavior)
+number:
+  - platform: template
+    id: ha_set_temperature
+    name: "Set Temperature"
+    icon: "mdi:thermometer"
+    unit_of_measurement: "°C"
+    min_value: 0
+    max_value: 280
+    step: 1
+    mode: box
+    update_interval: 1s
+    lambda: |-
+      return id(working_temperature);
+    set_action:
+      - lambda: |-
+          if (x < 0) x = 0;
+          if (x > 280) x = 280;
+          id(working_temperature) = x;
+
+  - platform: template
+    id: ha_set_cook_duration
+    name: "Cook Duration"
+    icon: "mdi:timer-outline"
+    unit_of_measurement: "min"
+    min_value: 0
+    max_value: 1439
+    step: 1
+    mode: box
+    update_interval: 1s
+    lambda: |-
+      return id(working_timer);
+    set_action:
+      - lambda: |-
+          if (x < 0) x = 0;
+          if (x > 1439) x = 1439;
+          id(working_timer) = x;
+
+  - platform: template
+    id: ha_set_start_delay
+    name: "Start Delay"
+    icon: "mdi:clock-start"
+    unit_of_measurement: "min"
+    min_value: 0
+    max_value: 1439
+    step: 1
+    mode: box
+    update_interval: 1s
+    lambda: |-
+      return id(working_start_delay);
+    set_action:
+      - lambda: |-
+          if (x < 0) x = 0;
+          if (x > 1439) x = 1439;
+          id(working_start_delay) = x;
+
+  - platform: template
+    id: ha_preheat_timeout_minutes
+    name: "Preheat Timeout"
+    icon: "mdi:timer-sand"
+    unit_of_measurement: "min"
+    min_value: 0
+    max_value: 240
+    step: 1
+    mode: box
+    update_interval: 1s
+    lambda: |-
+      return id(preheat_timeout_minutes);
+    set_action:
+      - lambda: |-
+          if (x < 0) x = 0;
+          if (x > 240) x = 240;
+          id(preheat_timeout_minutes) = x;
+
+# Text sensors
+text_sensor:
+  # IP Address
+  - platform: wifi_info
+    ip_address:
+      id: ip_address
+      name: "IP Address"
+
+  - platform: template
+    id: timer_state_text
+    name: "Timer State"
+    update_interval: 1s
+    lambda: |-
+      int state = id(timer_state);
+      if (state == 1) return std::string("WAITING");
+      if (state == 2) return std::string("PREHEATING");
+      if (state == 3) return std::string("READY");
+      if (state == 4) return std::string("COOKING");
+      return std::string("IDLE");
+
+  - platform: template
+    id: timer_delay_remaining_formatted
+    name: "Delay Remaining"
+    update_interval: 1s
+    lambda: |-
+      int sec = id(timer_delay_remaining);
+      if (sec < 0) sec = 0;
+      int h = sec / 3600;
+      int m = (sec % 3600) / 60;
+      int s = sec % 60;
+      char buf[12];
+      snprintf(buf, sizeof(buf), "%02d:%02d:%02d", h, m, s);
+      return std::string(buf);
+
+  - platform: template
+    id: timer_cook_remaining_formatted
+    name: "Cook Remaining"
+    update_interval: 1s
+    lambda: |-
+      int sec = id(timer_cook_remaining);
+      if (sec < 0) sec = 0;
+      int h = sec / 3600;
+      int m = (sec % 3600) / 60;
+      int s = sec % 60;
+      char buf[12];
+      snprintf(buf, sizeof(buf), "%02d:%02d:%02d", h, m, s);
+      return std::string(buf);
+
+  - platform: template
+    id: timer_active_countdown_formatted
+    name: "Active Countdown"
+    update_interval: 1s
+    lambda: |-
+      int state = id(timer_state);
+      int sec = 0;
+      if (state == 1 || state == 2) sec = id(timer_delay_remaining);
+      else if (state == 3 || state == 4) sec = id(timer_cook_remaining);
+      if (sec < 0) sec = 0;
+      int h = sec / 3600;
+      int m = (sec % 3600) / 60;
+      int s = sec % 60;
+      char buf[12];
+      snprintf(buf, sizeof(buf), "%02d:%02d:%02d", h, m, s);
+      return std::string(buf);
+
+# Binary sensors
+binary_sensor:
+  # API connection status
+  - platform: status
+    id: api_connected
+    name: "API Connection"
+
+  # Temperature Encoder Button (GPIO47)
+  - platform: gpio
+    id: button_temperature
+    name: "Temperature Button"
+    internal: true
+    pin:
+      number: GPIO47
+      mode: INPUT_PULLUP
+      inverted: true
+    on_press:
+      then:
+        - lambda: |-
+            bool was_sleeping = id(screen_sleeping);
+            id(wake_screen).execute();
+            if (!was_sleeping) {
+              int page = id(current_page);
+              if (page == 0 && id(timer_state) == 3) {
+                id(timer_state) = 4;
+              } else if (page == 0) {
+                // Main screen: temp button does nothing (just wake)
+              } else if (page == 4 || page == 5) {
+                // On confirmation screens: any non-confirm button cancels back to main
+                id(current_page) = 0;
+              } else {
+                id(current_page) = 0;
+              }
+            }
+
+  # Timer Encoder Button (GPIO8)
+  - platform: gpio
+    id: button_timer
+    name: "Timer Button"
+    internal: true
+    pin:
+      number: GPIO8
+      mode: INPUT_PULLUP
+      inverted: true
+    on_press:
+      then:
+        - lambda: |-
+            bool was_sleeping = id(screen_sleeping);
+            id(wake_screen).execute();
+            if (!was_sleeping) {
+              int page = id(current_page);
+              if (page == 0 && id(timer_state) == 3) {
+                id(timer_state) = 4;
+              } else if (page == 0) {
+                // Main screen: timer press → go to Apply Confirmation screen
+                id(current_page) = 4;
+              } else if (page == 4) {
+                id(apply_program).execute();
+                id(current_page) = 0;
+              } else if (page == 5) {
+                id(current_page) = 0;
+              } else if (page == 1) {
+                // On timer sub-screen: phase toggle / return to main (no applying)
+                if (id(timer_edit_phase) == 0) {
+                  // If program is running, skip delay editing (locked)
+                  if (id(timer_state) >= 1) {
+                    // Delay locked while running, just return to main
+                    id(timer_edit_phase) = 0;
+                    id(current_page) = 0;
+                  } else {
+                    id(timer_edit_phase) = 1;
+                  }
+                } else {
+                  id(timer_edit_phase) = 0;
+                  id(current_page) = 0;
+                }
+              } else {
+                id(current_page) = 0;
+              }
+            }
+
+  # Mode Encoder Button (GPIO40)
+  - platform: gpio
+    id: button_mode
+    name: "Mode Button"
+    internal: true
+    pin:
+      number: GPIO40
+      mode: INPUT_PULLUP
+      inverted: true
+    on_press:
+      then:
+        - lambda: |-
+            bool was_sleeping = id(screen_sleeping);
+            id(wake_screen).execute();
+            if (!was_sleeping) {
+              int page = id(current_page);
+              if (page == 0 && id(timer_state) == 3) {
+                id(timer_state) = 4;
+              } else if (page == 0) {
+                // Main screen: mode press → go to Cancel Confirmation screen
+                id(current_page) = 5;
+              } else if (page == 5) {
+                id(cancel_program).execute();
+                id(current_page) = 0;
+              } else if (page == 4) {
+                id(current_page) = 0;
+              } else if (page == 3) {
+                // On mode sub-screen: toggle selected element or go back
+                int selected = id(mode_selected_element);
+                if (selected == 4) {
+                  id(current_page) = 0;
+                } else {
+                  bool new_state;
+                  if (selected == 0) {
+                    new_state = !id(desired_top_element);
+                    id(desired_top_element) = new_state;
+                  } else if (selected == 1) {
+                    new_state = !id(desired_bottom_element);
+                    id(desired_bottom_element) = new_state;
+                  } else if (selected == 2) {
+                    new_state = !id(desired_grill_element);
+                    id(desired_grill_element) = new_state;
+                  } else if (selected == 3) {
+                    new_state = !id(desired_fan_element);
+                    id(desired_fan_element) = new_state;
+                  }
+                }
+              } else {
+                id(current_page) = 0;
+              }
+            }
+
+  # System ON/OFF state
+  - platform: template
+    id: system_on
+    name: "System ON"
+    lambda: |-
+      bool any_ssr_on =
+        id(top_element_relay).state ||
+        id(bottom_element_relay).state ||
+        id(grill_element_relay).state ||
+        id(fan_relay).state;
+      return any_ssr_on || id(timer_state) != 0;
+
+# Scripts
+script:
+  # Apply all draft values to the active runtime (start or update a program)
+  - id: apply_program
+    then:
+      - lambda: |-
+          // Copy draft values to active
+          id(active_temperature) = id(working_temperature);
+          id(active_top_element) = id(desired_top_element);
+          id(active_bottom_element) = id(desired_bottom_element);
+          id(active_grill_element) = id(desired_grill_element);
+          id(active_fan_element) = id(desired_fan_element);
+
+          if (id(timer_state) == 0) {
+            // IDLE: start a fresh program
+            id(preheat_elapsed_seconds) = 0;
+            id(timer_cook_remaining) = (int)(id(working_timer) * 60.0f);
+            id(cook_total_seconds) = id(timer_cook_remaining);
+            id(timer_delay_remaining) = (int)(id(working_start_delay) * 60.0f);
+            bool needs_preheat = id(active_temperature) > 0.0f &&
+              (id(active_top_element) || id(active_bottom_element) || id(active_grill_element));
+            if (!needs_preheat) {
+              // Fan-only or no heating: skip straight to cooking
+              id(timer_state) = id(timer_delay_remaining) > 0 ? 1 : 4;
+            } else {
+              id(timer_state) = id(timer_delay_remaining) > 0 ? 1 : 2;
+            }
+          } else {
+            // RUNNING: update the active program
+            // Duration: calculate delta from last applied total and add to remaining
+            int new_total = (int)(id(working_timer) * 60.0f);
+            int delta = new_total - id(cook_total_seconds);
+            int new_remaining = id(timer_cook_remaining) + delta;
+            id(timer_cook_remaining) = new_remaining > 0 ? new_remaining : 0;
+            id(cook_total_seconds) = new_total;
+            // Delay: can't change while running (ignored)
+          }
+
+  # Cancel the running program and reset everything
+  - id: cancel_program
+    then:
+      - lambda: |-
+          auto call = id(pid_climate).make_call();
+          call.set_mode("OFF");
+          call.perform();
+          id(pid_heat_was_active) = false;
+          id(top_element_relay).turn_off();
+          id(bottom_element_relay).turn_off();
+          id(grill_element_relay).turn_off();
+          id(fan_relay).turn_off();
+          // light_relay (cooling fan) stays on -- managed by cooldown logic in 1s interval
+          id(timer_state) = 0;
+          id(timer_delay_remaining) = 0;
+          id(timer_cook_remaining) = 0;
+          id(preheat_elapsed_seconds) = 0;
+          id(cook_total_seconds) = 0;
+          id(active_temperature) = 0.0f;
+          id(working_temperature) = 0.0f;
+          id(working_timer) = 0.0f;
+          id(working_start_delay) = 0.0f;
+          id(desired_top_element) = false;
+          id(desired_bottom_element) = false;
+          id(desired_grill_element) = false;
+          id(desired_fan_element) = false;
+          id(active_top_element) = false;
+          id(active_bottom_element) = false;
+          id(active_grill_element) = false;
+          id(active_fan_element) = false;
+          id(mode_selected_element) = 0;
+
+  # Wake screen and reset activity timer
+  - id: wake_screen
+    then:
+      - lambda: |-
+          id(last_activity_time) = millis();
+      - if:
+          condition:
+            lambda: "return id(screen_sleeping);"
+          then:
+            - lambda: |-
+                id(screen_sleeping) = false;
+            - light.turn_on: display_backlight
+            - component.update: oven_display
+
+  # Put screen to sleep
+  - id: sleep_screen
+    then:
+      - if:
+          condition:
+            lambda: "return !id(screen_sleeping);"
+          then:
+            - lambda: |-
+                id(screen_sleeping) = true;
+            - component.update: oven_display
+            - light.turn_off: display_backlight
+
+  # Return to main page after timeout
+  - id: return_to_main
+    then:
+      - lambda: |-
+          if (id(current_page) != 0) {
+            id(current_page) = 0;
+          }
+
+  # Beep the buzzer when cooking finishes (3 short beeps)
+  - id: buzzer_cook_finished
+    then:
+      - output.turn_on: buzzer_output
+      - delay: 200ms
+      - output.turn_off: buzzer_output
+      - delay: 200ms
+      - output.turn_on: buzzer_output
+      - delay: 200ms
+      - output.turn_off: buzzer_output
+      - delay: 200ms
+      - output.turn_on: buzzer_output
+      - delay: 400ms
+      - output.turn_off: buzzer_output
+
+  # Beep the buzzer when preheating finishes (fast 2-beep pattern)
+  - id: buzzer_preheat_finished
+    then:
+      - output.turn_on: buzzer_output
+      - delay: 120ms
+      - output.turn_off: buzzer_output
+      - delay: 120ms
+      - output.turn_on: buzzer_output
+      - delay: 180ms
+      - output.turn_off: buzzer_output
+
+# Intervals for runtime and sleep management
+interval:
+  # Core oven runtime loop (1 Hz): timer state machine and SSR gating.
+  # Temperature is read from MAX31865 PT100 via current_oven_temp global.
+  - interval: 1s
+    then:
+      - lambda: |-
+          int previous_state = id(last_timer_state_observed);
+          float target = id(active_temperature);
+
+          // Temperature is processed in the MAX31865 on_value callback.
+          // We just read the smoothed result here.
+          float current_temp = id(current_oven_temp);
+
+          // Timer state machine (NO auto-start; programs only start via apply_program)
+          int state = id(timer_state);
+
+          // Resume an in-progress cook after power loss
+          if (state == 0 && id(timer_cook_remaining) > 0) {
+            if (id(timer_delay_remaining) > 0) {
+              id(timer_state) = 1;
+            } else {
+              id(timer_state) = 4;
+            }
+            state = id(timer_state);
+          }
+
+          bool heating_elements_selected =
+            id(active_top_element) ||
+            id(active_bottom_element) ||
+            id(active_grill_element);
+
+          if (state == 1) {
+            // Waiting (delay before cook) - elements should stay off here
+            if (id(timer_delay_remaining) > 0) {
+              id(timer_delay_remaining)--;
+            }
+            if (id(timer_delay_remaining) <= 0) {
+              id(timer_delay_remaining) = 0;
+              bool needs_preheat = target > 0.0f && heating_elements_selected;
+              id(timer_state) = needs_preheat ? 2 : 4;
+            }
+          } else if (state == 2) {
+            // Preheating: wait until target temp reached
+            if (id(preheat_elapsed_seconds) < 2147483647) {
+              id(preheat_elapsed_seconds)++;
+            }
+
+            // Optional timeout to avoid being stuck forever in PREHEATING.
+            // Set preheat_timeout_minutes=0 to disable this behavior.
+            int timeout_sec = 0;
+            if (id(preheat_timeout_minutes) > 0.0f) {
+              timeout_sec = (int)(id(preheat_timeout_minutes) * 60.0f);
+            }
+            if (timeout_sec > 0 && id(preheat_elapsed_seconds) >= timeout_sec) {
+              id(timer_state) = (id(working_start_delay) > 0.0f) ? 4 : 3;
+              id(buzzer_preheat_finished).execute();
+            }
+
+            if (target > 0.0f && heating_elements_selected) {
+              if (current_temp >= target - 1.0f) {
+                id(timer_state) = (id(working_start_delay) > 0.0f) ? 4 : 3;
+                id(buzzer_preheat_finished).execute();
+              }
+            }
+          } else if (state == 3) {
+            // Ready: oven at temp, holding, waiting for user to press any button
+            // PID and fan keep running (handled by allow_heat / allow_fan)
+            // No countdown, no timeout — just hold
+          } else if (state == 4) {
+            // Cooking: only decrement when timed; no-timer (remaining=0) runs until user cancels
+            if (id(timer_cook_remaining) > 0) {
+              id(timer_cook_remaining)--;
+              if (id(timer_cook_remaining) <= 0) {
+                id(timer_cook_remaining) = 0;
+                id(timer_state) = 0;
+                id(cancel_program).execute();
+                id(buzzer_cook_finished).execute();
+              }
+            }
+          }
+
+          // Allow heating only when timer is in preheat/cook (states 2 or 3)
+          bool any_heating_active =
+            id(active_top_element) ||
+            id(active_bottom_element) ||
+            id(active_grill_element);
+
+          bool allow_heat =
+            (target > 0.0f && any_heating_active) &&
+            (id(timer_state) == 2 || id(timer_state) == 3 || id(timer_state) == 4);
+
+          // PID gating: only update climate component on state transitions
+          if (allow_heat && !id(pid_heat_was_active)) {
+            auto call = id(pid_climate).make_call();
+            call.set_mode("HEAT");
+            call.set_target_temperature(target);
+            call.perform();
+          } else if (allow_heat) {
+            if (id(pid_climate).target_temperature != target) {
+              auto call = id(pid_climate).make_call();
+              call.set_target_temperature(target);
+              call.perform();
+            }
+          } else if (!allow_heat && id(pid_heat_was_active)) {
+            auto call = id(pid_climate).make_call();
+            call.set_mode("OFF");
+            call.perform();
+            id(top_element_relay).turn_off();
+            id(bottom_element_relay).turn_off();
+            id(grill_element_relay).turn_off();
+          }
+          id(pid_heat_was_active) = allow_heat;
+
+          // Fan runs when selected and program is active (no temperature requirement)
+          bool program_active = (id(timer_state) == 2 || id(timer_state) == 3 || id(timer_state) == 4);
+          bool allow_fan = id(active_fan_element) && program_active;
+          if (allow_fan) {
+            id(fan_relay).turn_on();
+          } else {
+            id(fan_relay).turn_off();
+          }
+
+          // Cooling fan (light relay): ON when heating, fan running, or temp above safe threshold
+          if (allow_heat || allow_fan) {
+            id(light_relay).turn_on();
+          } else if (current_temp > id(cooldown_temp_threshold)) {
+            id(light_relay).turn_on();
+          } else {
+            id(light_relay).turn_off();
+          }
+
+          // Wake display when runtime program phase changes
+          if (id(timer_state) == 2 && previous_state != 2) {
+            id(preheat_elapsed_seconds) = 0;
+          }
+          if (id(timer_state) != previous_state) {
+            id(last_timer_state_observed) = id(timer_state);
+            id(wake_screen).execute();
+          }
+
+          // Keep screen awake while in ready state (waiting for user)
+          if (id(timer_state) == 3) {
+            id(wake_screen).execute();
+          }
+
+  # Check for sleep timeout (every 5 seconds)
+  - interval: 5s
+    then:
+      - lambda: |-
+          unsigned long now = millis();
+          unsigned long idle_time = now - id(last_activity_time);
+
+          // Main page: sleep after 60 seconds
+          if (id(current_page) == 0 && idle_time > 60000 && !id(screen_sleeping)) {
+            id(sleep_screen).execute();
+          }
+
+          // Detail pages: return to main after 60 seconds
+          if (id(current_page) != 0 && idle_time > 60000) {
+            id(return_to_main).execute();
+          }
+
+# Switches for oven element control (SSR outputs)
+switch:
+  # Home Assistant: desired profile selectors (same behavior as mode page)
+  - platform: template
+    id: ha_top_element_selected
+    name: "Top Element Selected"
+    icon: "mdi:radiator"
+    lambda: |-
+      return id(desired_top_element);
+    turn_on_action:
+      - lambda: |-
+          id(desired_top_element) = true;
+    turn_off_action:
+      - lambda: |-
+          id(desired_top_element) = false;
+
+  - platform: template
+    id: ha_bottom_element_selected
+    name: "Bottom Element Selected"
+    icon: "mdi:radiator"
+    lambda: |-
+      return id(desired_bottom_element);
+    turn_on_action:
+      - lambda: |-
+          id(desired_bottom_element) = true;
+    turn_off_action:
+      - lambda: |-
+          id(desired_bottom_element) = false;
+
+  - platform: template
+    id: ha_grill_element_selected
+    name: "Grill Element Selected"
+    icon: "mdi:grill"
+    lambda: |-
+      return id(desired_grill_element);
+    turn_on_action:
+      - lambda: |-
+          id(desired_grill_element) = true;
+    turn_off_action:
+      - lambda: |-
+          id(desired_grill_element) = false;
+
+  - platform: template
+    id: ha_fan_selected
+    name: "Fan Selected"
+    icon: "mdi:fan"
+    lambda: |-
+      return id(desired_fan_element);
+    turn_on_action:
+      - lambda: |-
+          id(desired_fan_element) = true;
+    turn_off_action:
+      - lambda: |-
+          id(desired_fan_element) = false;
+
+  # Top heating element SSR
+  - platform: gpio
+    id: top_element_relay
+    name: "Top Heating Element"
+    internal: true
+    pin: GPIO1
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - lambda: id(light_relay).turn_on();
+
+  # Bottom heating element SSR
+  - platform: gpio
+    id: bottom_element_relay
+    name: "Bottom Heating Element"
+    internal: true
+    pin: GPIO2
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - lambda: id(light_relay).turn_on();
+
+  # Grill element SSR
+  - platform: gpio
+    id: grill_element_relay
+    name: "Grill Element"
+    internal: true
+    pin: GPIO3
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - lambda: id(light_relay).turn_on();
+
+  # Fan SSR
+  - platform: gpio
+    id: fan_relay
+    name: "Fan"
+    internal: true
+    pin: GPIO4
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - lambda: id(light_relay).turn_on();
+
+  # Oven light SSR
+  - platform: gpio
+    id: light_relay
+    name: "Oven Light"
+    internal: true
+    pin: GPIO5
+    restore_mode: ALWAYS_OFF
+
+# Utility buttons
+button:
+  - platform: template
+    name: "Apply Program"
+    icon: "mdi:check-bold"
+    on_press:
+      - script.execute: apply_program
+
+  - platform: template
+    name: "Cancel Program"
+    icon: "mdi:cancel"
+    on_press:
+      - script.execute: cancel_program
+
+  - platform: template
+    name: "PID Autotune"
+    icon: "mdi:auto-fix"
+    on_press:
+      - climate.pid.autotune:
+          id: pid_climate
+          positive_output: 0.7
+          noiseband: 0.05
+
+  # Restart button
+  - platform: restart
+    name: "Restart ESP32-S3"
+
+  # Force a display refresh
+  - platform: template
+    name: "Refresh Display"
+    internal: true
+    on_press:
+      - component.update: oven_display

@@ -1,0 +1,23 @@
+# ESPHome
+.esphome/
+*.bin
+*.elf
+*.map
+
+# Secrets
+secrets.yaml
+**/secrets.yaml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# FreeCAD backup files
+*.FCBak
