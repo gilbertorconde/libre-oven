@@ -2,7 +2,7 @@
 
 `libre-oven-card` is a custom Lovelace card that provides full control and monitoring of the **Libre Oven** — an open-source ESP32-S3 smart oven controller running ESPHome.
 
-> **Required firmware:** This card is designed for the [**Libre Oven**](https://github.com/condegil/libre-oven) ESPHome firmware. Flash the ESP32-S3 firmware from [`project/esp32/`](project/esp32/) before using this card.
+> **Required firmware:** This card is designed for the [**Libre Oven**](https://github.com/gilbertorconde/libre-oven) ESPHome firmware. Flash the ESP32-S3 firmware from [`project/esp32/`](project/esp32/) before using this card.
 
 Key features at a glance:
 
@@ -17,7 +17,7 @@ Key features at a glance:
 
 ## Credits
 
-Author: [gil](https://github.com/condegil) — 2026
+Author: [gil](https://github.com/gilbertorconde) — 2026
 
 ---
 
@@ -27,13 +27,13 @@ Author: [gil](https://github.com/condegil) — 2026
 
 1. In Home Assistant, open **HACS → Frontend**.
 2. Click the three-dot menu (⋮) in the top-right and choose **Custom repositories**.
-3. Paste `https://github.com/condegil/libre-oven` and select **Dashboard** as the category.
+3. Paste `https://github.com/gilbertorconde/libre-oven` and select **Dashboard** as the category.
 4. Click **Add**, then search for **Libre Oven Card** and install it.
 5. Reload your browser / clear the cache.
 
 ### Option B — Manual
 
-1. Download `libre-oven-card.js` from the [latest release](https://github.com/condegil/libre-oven/releases/latest).
+1. Download `libre-oven-card.js` from the [latest release](https://github.com/gilbertorconde/libre-oven/releases/latest).
 2. Copy it to `/config/www/libre-oven/libre-oven-card.js`.
 3. Add the following under **Settings → Dashboards → Resources**:
 
@@ -179,7 +179,7 @@ The card reads the `timer_state_code` sensor (numeric) for logic and the `timer_
 ## Requirements
 
 - Home Assistant 2023.4 or newer
-- The [**Libre Oven**](https://github.com/condegil/libre-oven) ESPHome firmware flashed and connected
+- The [**Libre Oven**](https://github.com/gilbertorconde/libre-oven) ESPHome firmware flashed and connected
 - No additional HACS frontend cards required
 
 ---
