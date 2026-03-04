@@ -65,6 +65,8 @@ entities:
   timer_state: sensor.libre_oven_timer_state
   timer_state_code: sensor.libre_oven_timer_state_code
   active_countdown: sensor.libre_oven_active_countdown
+  delay_remaining: sensor.libre_oven_delay_remaining
+  cook_remaining: sensor.libre_oven_cook_remaining
   set_temperature: number.libre_oven_set_temperature
   cook_duration: number.libre_oven_cook_duration
   start_delay: number.libre_oven_start_delay
@@ -156,6 +158,8 @@ The card reads the `timer_state_code` sensor (numeric) for logic and the `timer_
 | `timer_state`          | sensor  | Timer state text                |
 | `timer_state_code`     | sensor  | Timer state numeric code (0-4)  |
 | `active_countdown`     | sensor  | Formatted countdown (HH:MM:SS) |
+| `delay_remaining`      | sensor  | Delay remaining countdown       |
+| `cook_remaining`       | sensor  | Cook remaining countdown        |
 | `set_temperature`      | number  | Draft temperature control       |
 | `cook_duration`        | number  | Draft cook duration (minutes)   |
 | `start_delay`          | number  | Draft start delay (minutes)     |

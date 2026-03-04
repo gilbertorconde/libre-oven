@@ -946,9 +946,26 @@ display:
             int ds = abs_d % 60;
             char sign = delta_sec > 0 ? '+' : '-';
             it.printf(cx, y, id(font_small), id(hot_element), TextAlign::TOP_CENTER,
-                      "Time change: %c%d:%02d", sign, dm, ds);
+                      "Time: %c%d:%02d", sign, dm, ds);
           } else {
             it.print(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Time: no change");
+          }
+          y += 20;
+
+          // Show delay delta for running program
+          int new_delay_total = (int)(id(working_start_delay) * 60.0f);
+          int dd_sec = new_delay_total - id(delay_total_seconds);
+          if (id(timer_state) == 1 && dd_sec != 0) {
+            int abs_dd = dd_sec < 0 ? -dd_sec : dd_sec;
+            int ddm = abs_dd / 60;
+            int dds = abs_dd % 60;
+            char dsign = dd_sec > 0 ? '+' : '-';
+            it.printf(cx, y, id(font_small), id(hot_element), TextAlign::TOP_CENTER,
+                      "Delay: %c%d:%02d", dsign, ddm, dds);
+          } else if (id(timer_state) == 1) {
+            it.print(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Delay: no change");
+          } else {
+            it.print(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Delay: passed");
           }
           y += 20;
         }
@@ -1100,6 +1117,11 @@ globals:
 
   # Total programmed cook time in seconds (for display only)
   - id: cook_total_seconds
+    type: int
+    restore_value: yes
+    initial_value: "0"
+
+  - id: delay_total_seconds
     type: int
     restore_value: yes
     initial_value: "0"
@@ -1889,6 +1911,7 @@ script:
             id(timer_cook_remaining) = (int)(id(working_timer) * 60.0f);
             id(cook_total_seconds) = id(timer_cook_remaining);
             id(timer_delay_remaining) = (int)(id(working_start_delay) * 60.0f);
+            id(delay_total_seconds) = id(timer_delay_remaining);
             bool needs_preheat = id(active_temperature) > 0.0f &&
               (id(active_top_element) || id(active_bottom_element) || id(active_grill_element));
             if (!needs_preheat) {
@@ -1905,7 +1928,27 @@ script:
             int new_remaining = id(timer_cook_remaining) + delta;
             id(timer_cook_remaining) = new_remaining > 0 ? new_remaining : 0;
             id(cook_total_seconds) = new_total;
-            // Delay: can't change while running (ignored)
+
+            // Delay: apply delta to remaining, jump forward if new delay already elapsed
+            int new_delay_total = (int)(id(working_start_delay) * 60.0f);
+            int delay_delta = new_delay_total - id(delay_total_seconds);
+            int new_delay_remaining = id(timer_delay_remaining) + delay_delta;
+            id(delay_total_seconds) = new_delay_total;
+
+            if (id(timer_state) == 1) {
+              // Currently in WAITING: update the countdown
+              if (new_delay_remaining <= 0) {
+                // New delay is shorter than time already elapsed — advance immediately
+                id(timer_delay_remaining) = 0;
+                bool needs_preheat = id(active_temperature) > 0.0f &&
+                  (id(active_top_element) || id(active_bottom_element) || id(active_grill_element));
+                id(timer_state) = needs_preheat ? 2 : 4;
+              } else {
+                id(timer_delay_remaining) = new_delay_remaining;
+              }
+            }
+            // If already past WAITING (preheating/cooking), delay change is recorded
+            // in delay_total_seconds but doesn't affect the current phase.
           }
 
   # Cancel the running program and reset everything
@@ -1926,6 +1969,7 @@ script:
           id(timer_cook_remaining) = 0;
           id(preheat_elapsed_seconds) = 0;
           id(cook_total_seconds) = 0;
+          id(delay_total_seconds) = 0;
           id(active_temperature) = 0.0f;
           id(working_temperature) = 0.0f;
           id(working_timer) = 0.0f;

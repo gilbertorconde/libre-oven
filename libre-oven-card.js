@@ -220,6 +220,12 @@ class LibreOvenCard extends HTMLElement {
     const activeCountdownRaw = gs(e.active_countdown, '');
     const activeCountdown = activeCountdownRaw && activeCountdownRaw !== 'unknown' && activeCountdownRaw !== 'unavailable'
       ? String(activeCountdownRaw) : '';
+    const delayCountdownRaw = gs(e.delay_remaining, '');
+    const delayCountdown = delayCountdownRaw && delayCountdownRaw !== 'unknown' && delayCountdownRaw !== 'unavailable'
+      ? String(delayCountdownRaw) : '';
+    const cookCountdownRaw = gs(e.cook_remaining, '');
+    const cookCountdown = cookCountdownRaw && cookCountdownRaw !== 'unknown' && cookCountdownRaw !== 'unavailable'
+      ? String(cookCountdownRaw) : '';
 
     const topOn = this._isOn(e.top_element_selected);
     const bottomOn = this._isOn(e.bottom_element_selected);
@@ -267,17 +273,23 @@ class LibreOvenCard extends HTMLElement {
 
     let mainTimer = '';
     let subTimer = '';
+    let delayTimer = '';
     if (programActive) {
       if (timerStateCode === 2) mainTimer = 'Preheating';
       else if (timerStateCode === 3) mainTimer = 'Oven ready';
+      else if (timerStateCode === 4) mainTimer = cookCountdown || activeCountdown || '00:00:00';
       else mainTimer = activeCountdown || '00:00:00';
 
       if (timerStateCode === 3) subTimer = 'Press to start';
       else if (cookDuration <= 0) subTimer = 'Until stopped';
-      else subTimer = this._fmtHMSFromMinutes(cookDuration);
+
+      if (timerStateCode === 1) delayTimer = delayCountdown || activeCountdown || '00:00:00';
+      else if (timerStateCode === 2) delayTimer = delayCountdown || '00:00:00';
+      else delayTimer = '00:00:00';
     } else {
       mainTimer = cookDuration > 0 ? this._fmtHMSFromMinutes(cookDuration) : 'Until stopped';
-      subTimer = startDelay > 0 ? `Delay: ${this._fmtHM(startDelay)}` : '';
+      subTimer = '';
+      delayTimer = startDelay > 0 ? this._fmtHM(startDelay) : '';
     }
 
     const elParts = [];
@@ -289,10 +301,10 @@ class LibreOvenCard extends HTMLElement {
 
     return {
       ovenTemp, activeTemp, draftTemp, cookDuration, startDelay,
-      timerStateCode, activeCountdown, programActive,
+      timerStateCode, activeCountdown, delayCountdown, cookCountdown, programActive,
       topOn, bottomOn, grillOn, fanOn, anyHeating,
       topState, bottomState, grillState, fanState, frameState,
-      mc, stateLabel, mainTimer, subTimer, elementsSummary,
+      mc, stateLabel, mainTimer, subTimer, delayTimer, elementsSummary,
     };
   }
 
@@ -733,7 +745,8 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
     const timerTileActive = s.programActive;
 
     // Delay tile
-    const delayVal = s.startDelay > 0 ? this._fmtHM(s.startDelay) : 'Now';
+    const delayTileActive = s.programActive && (s.timerStateCode === 1 || s.timerStateCode === 2);
+    const delayVal = s.programActive ? (s.delayTimer || '00:00:00') : (s.startDelay > 0 ? this._fmtHM(s.startDelay) : 'Now');
 
     // Arc thermostat values (for sheet)
     const target = this._dragging && this._dragTemp != null ? this._dragTemp : Math.round(s.draftTemp);
@@ -792,7 +805,7 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
       <span class="tile-val">${timerTileVal}</span>
       ${s.subTimer ? `<span class="tile-lbl" style="margin-top:2px">${s.subTimer}</span>` : ''}
     </div>
-    <div class="tile${s.startDelay > 0 ? ' active' : ''}" data-action="open-delay">
+    <div class="tile${delayTileActive ? ' active' : ''}" data-action="open-delay">
       <span class="tile-lbl">Start Delay</span>
       <span class="tile-val">${delayVal}</span>
     </div>
@@ -1051,15 +1064,13 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
       case 'open-temperature': this._openSheet('temperature'); return;
 
       // Temperature arc +/- buttons
-      case 'temp-up': {
-        const cur = this._asNumber(this._getState(ent.set_temperature, '0'), 0);
-        const next = clamp(Math.round(cur) + 5, MIN_TEMP, MAX_TEMP);
-        this._call('number', 'set_value', { entity_id: ent.set_temperature, value: next });
-        break;
-      }
+      case 'temp-up':
       case 'temp-down': {
-        const cur = this._asNumber(this._getState(ent.set_temperature, '0'), 0);
-        const next = clamp(Math.round(cur) - 5, MIN_TEMP, MAX_TEMP);
+        const displayed = this.shadowRoot.getElementById('arc-temp-val');
+        const cur = displayed ? Number(displayed.textContent) || 0 : this._asNumber(this._getState(ent.set_temperature, '0'), 0);
+        const step = action === 'temp-up' ? 5 : -5;
+        const next = clamp(Math.round(cur) + step, MIN_TEMP, MAX_TEMP);
+        this._updateDialArc(next);
         this._call('number', 'set_value', { entity_id: ent.set_temperature, value: next });
         break;
       }
