@@ -420,6 +420,7 @@ class LibreOvenCard extends HTMLElement {
       topState, bottomState, grillState, fanState, frameState,
       mc, stateLabel, mainTimer, subTimer, delayTimer,
       timerSetLabel, delaySetLabel, elementsSummary, elementsActiveSummary,
+      hasElSensors,
       tempChanged, durationChanged, delayChanged,
       topChanged, bottomChanged, grillChanged, fanChanged,
       topActiveInProgram, bottomActiveInProgram, grillActiveInProgram, fanActiveInProgram,
@@ -946,7 +947,10 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
       `<span class="${elemClass(s.grillOn, s.grillActiveInProgram, s.grillChanged)}">Grill</span>`,
       `<span class="${elemClass(s.fanOn, s.fanActiveInProgram, s.fanChanged)}">Fan</span>`,
     ];
-    const elemLine1 = s.programActive ? s.elementsActiveSummary : s.elementsSummary;
+    // When program running: use active elements from binary sensors if available; else fall back to draft
+    const elemLine1 = s.programActive && s.hasElSensors
+      ? s.elementsActiveSummary
+      : s.elementsSummary;
     const elemLine2Html = hasElementChanges
       ? `<div class="draft-change-row elem-list">${elemParts.join(' ')}</div>`
       : '';
