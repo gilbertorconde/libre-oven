@@ -313,6 +313,9 @@ The following entities are exposed to Home Assistant:
 - Cook Remaining (HH:MM:SS countdown for cook duration)
 - Active Cook Total (minutes, what was applied)
 - Active Delay Total (minutes, what was applied)
+
+### Binary sensors
+- Active Top/Bottom/Grill/Fan Element — whether each element is in the running program (for draft-change detection)
 - Top/Bottom/Grill Element State (0=off, 1=selected, 2=armed, 3=heating)
 - Fan Element State (0=off, 1=selected, 2=active)
 - Oven Frame State (0=off, 1=selected, 2=active)

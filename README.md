@@ -93,6 +93,11 @@ entities:
   grill_element_state: sensor.libre_oven_grill_element_state
   fan_element_state: sensor.libre_oven_fan_element_state
   frame_state: sensor.libre_oven_oven_frame_state
+  # Active element flags (for draft-change detection)
+  active_top_element: binary_sensor.libre_oven_active_top_element
+  active_bottom_element: binary_sensor.libre_oven_active_bottom_element
+  active_grill_element: binary_sensor.libre_oven_active_grill_element
+  active_fan_element: binary_sensor.libre_oven_active_fan_element
 ```
 
 If your device name differs from `libre_oven`, use `base_name: your_device_name` or update the entity IDs in the explicit config.

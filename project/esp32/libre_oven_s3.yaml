@@ -1767,6 +1767,28 @@ text_sensor:
 
 # Binary sensors
 binary_sensor:
+  # Active element flags (what's in the running program) — for draft-change detection
+  - platform: template
+    id: ha_active_top_element
+    name: "Active Top Element"
+    lambda: |-
+      return id(active_top_element);
+  - platform: template
+    id: ha_active_bottom_element
+    name: "Active Bottom Element"
+    lambda: |-
+      return id(active_bottom_element);
+  - platform: template
+    id: ha_active_grill_element
+    name: "Active Grill Element"
+    lambda: |-
+      return id(active_grill_element);
+  - platform: template
+    id: ha_active_fan_element
+    name: "Active Fan Element"
+    lambda: |-
+      return id(active_fan_element);
+
   # API connection status
   - platform: status
     id: api_connected

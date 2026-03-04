@@ -57,6 +57,10 @@ const ENTITY_TEMPLATES = {
   grill_element_state: 'sensor.{base}_grill_element_state',
   fan_element_state: 'sensor.{base}_fan_element_state',
   frame_state: 'sensor.{base}_oven_frame_state',
+  active_top_element: 'binary_sensor.{base}_active_top_element',
+  active_bottom_element: 'binary_sensor.{base}_active_bottom_element',
+  active_grill_element: 'binary_sensor.{base}_active_grill_element',
+  active_fan_element: 'binary_sensor.{base}_active_fan_element',
 };
 
 // ── SVG arc helpers (from AC card) ───────────────────────────────────────────
@@ -368,12 +372,15 @@ class LibreOvenCard extends HTMLElement {
       if (!id || !hasSensor(id)) return -1;
       return Math.round(n(gs(id, '0'), 0));
     };
-    const topActiveInProgram = elStateCode(e.top_element_state) >= 2;
-    const bottomActiveInProgram = elStateCode(e.bottom_element_state) >= 2;
-    const grillActiveInProgram = elStateCode(e.grill_element_state) >= 2;
-    const fanActiveInProgram = elStateCode(e.fan_element_state) >= 2;
+    // Use active_* binary sensors for "in program" check (not element state sensors,
+    // which conflate draft and active during WAITING).
+    const activeElOn = (entityId) => entityId && this._getState(entityId, 'off') === 'on';
+    const topActiveInProgram = activeElOn(e.active_top_element);
+    const bottomActiveInProgram = activeElOn(e.active_bottom_element);
+    const grillActiveInProgram = activeElOn(e.active_grill_element);
+    const fanActiveInProgram = activeElOn(e.active_fan_element);
 
-    const hasElSensors = hasSensor(e.top_element_state);
+    const hasElSensors = hasValidState(e.active_top_element);
     const topChanged = programActive && hasElSensors && topOn !== topActiveInProgram;
     const bottomChanged = programActive && hasElSensors && bottomOn !== bottomActiveInProgram;
     const grillChanged = programActive && hasElSensors && grillOn !== grillActiveInProgram;
@@ -855,6 +862,7 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
 }
 .elem-added { color: #4caf50; }
 .elem-removed { color: #f44336; text-decoration: line-through; }
+.elem-unchanged { color: var(--primary-text-color); }
 .update-hint {
   font-size: 10px;
   color: var(--mode-color);
@@ -915,14 +923,20 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
       ? `<div class="draft-change-row"><span class="draft-old">${Math.round(s.activeTemp)}°C</span><span class="draft-arrow">→</span><span class="draft-new">${Math.round(s.draftTemp)}°C</span></div>`
       : '';
 
-    // Element draft change summary
-    const elemChangeParts = [];
-    if (s.topChanged) elemChangeParts.push(`<span class="${s.topOn ? 'elem-added' : 'elem-removed'}">Top</span>`);
-    if (s.bottomChanged) elemChangeParts.push(`<span class="${s.bottomOn ? 'elem-added' : 'elem-removed'}">Bottom</span>`);
-    if (s.grillChanged) elemChangeParts.push(`<span class="${s.grillOn ? 'elem-added' : 'elem-removed'}">Grill</span>`);
-    if (s.fanChanged) elemChangeParts.push(`<span class="${s.fanOn ? 'elem-added' : 'elem-removed'}">Fan</span>`);
-    const elemDraftHtml = elemChangeParts.length > 0
-      ? `<div class="draft-change-row">${elemChangeParts.join(' ')}</div>`
+    // Element draft change: show all four with colors (green=add, red+strikethrough=remove, white=unchanged)
+    const hasElementChanges = s.topChanged || s.bottomChanged || s.grillChanged || s.fanChanged;
+    const elemClass = (on, changed, added) => {
+      if (!changed) return 'elem-unchanged';
+      return added ? 'elem-added' : 'elem-removed';
+    };
+    const elemParts = [
+      `<span class="${elemClass(s.topOn, s.topChanged, s.topOn)}">Top</span>`,
+      `<span class="${elemClass(s.bottomOn, s.bottomChanged, s.bottomOn)}">Bottom</span>`,
+      `<span class="${elemClass(s.grillOn, s.grillChanged, s.grillOn)}">Grill</span>`,
+      `<span class="${elemClass(s.fanOn, s.fanChanged, s.fanOn)}">Fan</span>`,
+    ];
+    const elemDisplayHtml = hasElementChanges
+      ? `<div class="draft-change-row elem-list">${elemParts.join(' ')}</div>`
       : '';
 
     // Arc thermostat values (for sheet)
@@ -992,8 +1006,7 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
     </div>
     <div class="tile${(s.topOn || s.bottomOn || s.grillOn || s.fanOn) ? ' active' : ''}" data-action="open-elements">
       <span class="tile-lbl">Elements</span>
-      <span class="tile-val-text">${s.elementsSummary}</span>
-      ${elemDraftHtml}
+      ${hasElementChanges ? elemDisplayHtml : `<span class="tile-val-text">${s.elementsSummary}</span>`}
     </div>
     <div class="tile" data-action="open-temperature">
       <div class="temp-tile-inner">
