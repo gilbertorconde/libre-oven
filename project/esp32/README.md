@@ -206,6 +206,14 @@ If a program is started with only the fan selected (no heating elements or tempe
 
 A configurable timeout (`preheat_timeout_minutes`, default **20 minutes**) prevents the oven from being stuck in preheating indefinitely. When the timeout expires, the system transitions to ready/cooking regardless of whether the target temperature was reached. Set to 0 to disable.
 
+### Live program updates
+
+When Apply Program is pressed while a program is already running:
+
+- **Temperature and elements**: updated immediately.
+- **Cook duration**: uses a delta approach — the difference between the new and previous total is added to `timer_cook_remaining`. This preserves elapsed cooking time rather than resetting the countdown.
+- **Start delay**: also uses a delta approach via `delay_total_seconds`. If the program is currently in the Waiting state and the new delay is shorter than the time already elapsed, the program advances immediately to Preheating (or Cooking for fan-only). If the program is already past the Waiting phase, the delay change is recorded but has no effect on the current phase.
+
 ### Implementation variables
 
 - `timer_state`:
@@ -219,6 +227,7 @@ A configurable timeout (`preheat_timeout_minutes`, default **20 minutes**) preve
 - `timer_delay_remaining` -- delay countdown (seconds, not restored).
 - `timer_cook_remaining` -- cook countdown (seconds, **restored** across reboots). 0 = no timer.
 - `cook_total_seconds` -- frozen total cook time for display (seconds, restored).
+- `delay_total_seconds` -- frozen total delay time for delta updates (seconds, restored).
 - `desired_top_element`, `desired_bottom_element`, `desired_grill_element`, `desired_fan_element` -- logical element selection from Mode page.
 
 ### Heating gate
@@ -300,6 +309,8 @@ The following entities are exposed to Home Assistant:
 - Timer State Code (numeric: 0-4)
 - Active Countdown Seconds
 - Active Countdown Formatted (HH:MM:SS)
+- Delay Remaining (HH:MM:SS countdown for start delay)
+- Cook Remaining (HH:MM:SS countdown for cook duration)
 - Top/Bottom/Grill Element State (0=off, 1=selected, 2=armed, 3=heating)
 - Fan Element State (0=off, 1=selected, 2=active)
 - Oven Frame State (0=off, 1=selected, 2=active)
