@@ -381,12 +381,10 @@ class LibreOvenCard extends HTMLElement {
     const fanActiveInProgram = activeElOn(e.active_fan_element);
 
     const hasElSensors = hasValidState(e.active_top_element);
-    // Skip element change detection during WAITING — binary sensors can lag after apply.
-    const inWaiting = timerStateCode === 1;
-    const topChanged = programActive && !inWaiting && hasElSensors && topOn !== topActiveInProgram;
-    const bottomChanged = programActive && !inWaiting && hasElSensors && bottomOn !== bottomActiveInProgram;
-    const grillChanged = programActive && !inWaiting && hasElSensors && grillOn !== grillActiveInProgram;
-    const fanChanged = programActive && !inWaiting && hasElSensors && fanOn !== fanActiveInProgram;
+    const topChanged = programActive && hasElSensors && topOn !== topActiveInProgram;
+    const bottomChanged = programActive && hasElSensors && bottomOn !== bottomActiveInProgram;
+    const grillChanged = programActive && hasElSensors && grillOn !== grillActiveInProgram;
+    const fanChanged = programActive && hasElSensors && fanOn !== fanActiveInProgram;
 
     // Grace period: don't show draft changes for 5s after program becomes active.
     // Active sensors (cook_total, delay_total) and binary sensors update on different cycles.
@@ -936,17 +934,20 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
     // Elements display:
     // Line 1 (white): when program running, show active elements (what's in the running program).
     // Line 2 (when changes): diff — green=add, red+strikethrough=remove, white=unchanged.
+    // Only show elements that are in draft OR in active; omit elements in neither.
     const hasElementChanges = s.topChanged || s.bottomChanged || s.grillChanged || s.fanChanged;
     const elemClass = (inDraft, inActive, changed) => {
       if (!changed) return 'elem-unchanged';
       return inDraft ? 'elem-added' : 'elem-removed';  // in draft but not active = add; in active but not draft = remove
     };
+    const elemPart = (label, inDraft, inActive, changed) =>
+      (inDraft || inActive) ? `<span class="${elemClass(inDraft, inActive, changed)}">${label}</span>` : '';
     const elemParts = [
-      `<span class="${elemClass(s.topOn, s.topActiveInProgram, s.topChanged)}">Top</span>`,
-      `<span class="${elemClass(s.bottomOn, s.bottomActiveInProgram, s.bottomChanged)}">Bottom</span>`,
-      `<span class="${elemClass(s.grillOn, s.grillActiveInProgram, s.grillChanged)}">Grill</span>`,
-      `<span class="${elemClass(s.fanOn, s.fanActiveInProgram, s.fanChanged)}">Fan</span>`,
-    ];
+      elemPart('Top', s.topOn, s.topActiveInProgram, s.topChanged),
+      elemPart('Bottom', s.bottomOn, s.bottomActiveInProgram, s.bottomChanged),
+      elemPart('Grill', s.grillOn, s.grillActiveInProgram, s.grillChanged),
+      elemPart('Fan', s.fanOn, s.fanActiveInProgram, s.fanChanged),
+    ].filter(Boolean);
     // When program running: use active elements from binary sensors if available; else fall back to draft
     const elemLine1 = s.programActive && s.hasElSensors
       ? s.elementsActiveSummary
