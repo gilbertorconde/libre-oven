@@ -67,6 +67,8 @@ entities:
   active_countdown: sensor.libre_oven_active_countdown
   delay_remaining: sensor.libre_oven_delay_remaining
   cook_remaining: sensor.libre_oven_cook_remaining
+  active_cook_total: sensor.libre_oven_active_cook_total
+  active_delay_total: sensor.libre_oven_active_delay_total
   set_temperature: number.libre_oven_set_temperature
   cook_duration: number.libre_oven_cook_duration
   start_delay: number.libre_oven_start_delay
@@ -102,12 +104,6 @@ Mirrors the physical oven display:
   - Preheating: red (#e01e00)
   - Ready: green (#4caf50)
   - Cooking: green (#4caf50)
-- **Timer display**:
-  - Preheating state: shows "Preheating"
-  - Ready state: shows "Oven ready" / "Press to start"
-  - Cooking state: shows countdown (HH:MM:SS)
-  - No timer: shows "No timer"
-  - Idle: shows draft duration or "No timer set"
 - **Current oven temperature**
 - **Target temperature** (active when program running, draft when idle)
 - **Oven graphic** with SVG element visualization:
@@ -116,17 +112,29 @@ Mirrors the physical oven display:
   - Yellow: armed/active (program running, SSR cycling)
   - Red: actively heating (SSR on)
 
-### Middle Section — Controls (internal HA draft + ESP32 sync)
+### Middle Section — Tiles & Controls
 
-- **Temperature** slider/input
-- **Cook duration** input
-- **Start delay** input
-- **Element toggles** (Top, Bottom, Grill, Fan)
+Four tiles in a 2×2 grid, each opening a bottom-sheet for editing:
 
-Controls maintain an internal HA state for responsiveness. Values sync to the ESP32's internal draft:
-- Number inputs: sync on value change
-- Draggable inputs: sync on release
-- Toggle buttons: sync on click
+- **Timer tile**: Cook remaining countdown during COOKING, "Preheating"/"Oven ready" during those states, set cook total when WAITING. Shows the applied set value beneath.
+- **Start Delay tile**: Delay remaining countdown during WAITING, "Done" once delay has passed. Shows the applied set value beneath.
+- **Elements tile**: Active element summary (Top + Bottom + Grill + Fan).
+- **Temperature tile**: Current temperature and set temperature side by side.
+
+Controls in the sheets:
+- **Temperature**: draggable arc thermostat with +/− 5°C buttons
+- **Cook duration**: +/−1 and +/−10 minute buttons with numeric input
+- **Start delay**: +/−1 and +/−10 minute buttons with numeric input
+- **Element toggles**: Top, Bottom, Grill, Fan pill buttons
+
+### Draft-Change Feedback
+
+When a program is running, any change to draft values (temperature, duration, delay, or elements) is shown inline on the tiles:
+
+- **Temperature**: old value with strikethrough → new value in accent color
+- **Timer / Delay**: old set time with strikethrough → new time in accent color
+- **Elements**: added elements in green, removed elements in red with strikethrough
+- A pulsing **"DRAFT CHANGES — Press Update to apply"** hint appears above the action buttons
 
 ### Bottom Section — Actions
 
@@ -160,6 +168,8 @@ The card reads the `timer_state_code` sensor (numeric) for logic and the `timer_
 | `active_countdown`     | sensor  | Formatted countdown (HH:MM:SS) |
 | `delay_remaining`      | sensor  | Delay remaining countdown       |
 | `cook_remaining`       | sensor  | Cook remaining countdown        |
+| `active_cook_total`    | sensor  | Active program cook total (min) |
+| `active_delay_total`   | sensor  | Active program delay total (min)|
 | `set_temperature`      | number  | Draft temperature control       |
 | `cook_duration`        | number  | Draft cook duration (minutes)   |
 | `start_delay`          | number  | Draft start delay (minutes)     |

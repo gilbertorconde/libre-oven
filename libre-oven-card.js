@@ -227,6 +227,9 @@ class LibreOvenCard extends HTMLElement {
     const cookCountdown = cookCountdownRaw && cookCountdownRaw !== 'unknown' && cookCountdownRaw !== 'unavailable'
       ? String(cookCountdownRaw) : '';
 
+    const activeCookTotal = n(gs(e.active_cook_total, '0'), 0);
+    const activeDelayTotal = n(gs(e.active_delay_total, '0'), 0);
+
     const topOn = this._isOn(e.top_element_selected);
     const bottomOn = this._isOn(e.bottom_element_selected);
     const grillOn = this._isOn(e.grill_element_selected);
@@ -274,23 +277,51 @@ class LibreOvenCard extends HTMLElement {
     let mainTimer = '';
     let subTimer = '';
     let delayTimer = '';
+    let timerSetLabel = '';
+    let delaySetLabel = '';
     if (programActive) {
-      if (timerStateCode === 2) mainTimer = 'Preheating';
+      if (timerStateCode === 4) mainTimer = cookCountdown || activeCountdown || '00:00:00';
+      else if (timerStateCode === 2) mainTimer = 'Preheating';
       else if (timerStateCode === 3) mainTimer = 'Oven ready';
-      else if (timerStateCode === 4) mainTimer = cookCountdown || activeCountdown || '00:00:00';
+      else if (timerStateCode === 1) mainTimer = activeCookTotal > 0 ? this._fmtHMSFromMinutes(activeCookTotal) : 'Until stopped';
       else mainTimer = activeCountdown || '00:00:00';
 
       if (timerStateCode === 3) subTimer = 'Press to start';
       else if (cookDuration <= 0) subTimer = 'Until stopped';
 
       if (timerStateCode === 1) delayTimer = delayCountdown || activeCountdown || '00:00:00';
-      else if (timerStateCode === 2) delayTimer = delayCountdown || '00:00:00';
-      else delayTimer = '00:00:00';
+      else delayTimer = 'Done';
+
+      timerSetLabel = activeCookTotal > 0 ? this._fmtHM(activeCookTotal) : 'No timer';
+      delaySetLabel = activeDelayTotal > 0 ? this._fmtHM(activeDelayTotal) : 'None';
     } else {
       mainTimer = cookDuration > 0 ? this._fmtHMSFromMinutes(cookDuration) : 'Until stopped';
       subTimer = '';
       delayTimer = startDelay > 0 ? this._fmtHM(startDelay) : '';
+      timerSetLabel = '';
+      delaySetLabel = '';
     }
+
+    // Draft-change detection (only meaningful when a program is running)
+    const tempChanged = programActive && Math.round(draftTemp) !== Math.round(activeTemp);
+    const durationChanged = programActive && Math.round(cookDuration) !== Math.round(activeCookTotal);
+    const delayChanged = programActive && Math.round(startDelay) !== Math.round(activeDelayTotal);
+
+    const elStateCode = (id) => {
+      if (!id || !hasSensor(id)) return -1;
+      return Math.round(n(gs(id, '0'), 0));
+    };
+    const topActiveInProgram = elStateCode(e.top_element_state) >= 2;
+    const bottomActiveInProgram = elStateCode(e.bottom_element_state) >= 2;
+    const grillActiveInProgram = elStateCode(e.grill_element_state) >= 2;
+    const fanActiveInProgram = elStateCode(e.fan_element_state) >= 2;
+
+    const hasElSensors = hasSensor(e.top_element_state);
+    const topChanged = programActive && hasElSensors && topOn !== topActiveInProgram;
+    const bottomChanged = programActive && hasElSensors && bottomOn !== bottomActiveInProgram;
+    const grillChanged = programActive && hasElSensors && grillOn !== grillActiveInProgram;
+    const fanChanged = programActive && hasElSensors && fanOn !== fanActiveInProgram;
+    const anyDraftChange = tempChanged || durationChanged || delayChanged || topChanged || bottomChanged || grillChanged || fanChanged;
 
     const elParts = [];
     if (topOn) elParts.push('Top');
@@ -301,10 +332,16 @@ class LibreOvenCard extends HTMLElement {
 
     return {
       ovenTemp, activeTemp, draftTemp, cookDuration, startDelay,
+      activeCookTotal, activeDelayTotal,
       timerStateCode, activeCountdown, delayCountdown, cookCountdown, programActive,
       topOn, bottomOn, grillOn, fanOn, anyHeating,
       topState, bottomState, grillState, fanState, frameState,
-      mc, stateLabel, mainTimer, subTimer, delayTimer, elementsSummary,
+      mc, stateLabel, mainTimer, subTimer, delayTimer,
+      timerSetLabel, delaySetLabel, elementsSummary,
+      tempChanged, durationChanged, delayChanged,
+      topChanged, bottomChanged, grillChanged, fanChanged,
+      topActiveInProgram, bottomActiveInProgram, grillActiveInProgram, fanActiveInProgram,
+      anyDraftChange,
     };
   }
 
@@ -726,6 +763,45 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
   vertical-align: super;
   opacity: .6;
 }
+
+/* ── Draft-change indicators ── */
+.draft-old {
+  text-decoration: line-through;
+  opacity: .5;
+  font-size: 12px;
+  font-family: 'Share Tech Mono', monospace;
+}
+.draft-new {
+  color: var(--mode-color);
+  font-size: 12px;
+  font-family: 'Share Tech Mono', monospace;
+  font-weight: 600;
+}
+.draft-change-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+.draft-arrow {
+  font-size: 10px;
+  opacity: .5;
+}
+.elem-added { color: #4caf50; }
+.elem-removed { color: #f44336; text-decoration: line-through; }
+.update-hint {
+  font-size: 10px;
+  color: var(--mode-color);
+  text-align: center;
+  padding: 0 16px 4px;
+  font-weight: 600;
+  letter-spacing: .3px;
+  animation: hint-pulse 1.5s ease-in-out infinite;
+}
+@keyframes hint-pulse {
+  0%, 100% { opacity: .6; }
+  50% { opacity: 1; }
+}
 `;
   }
 
@@ -740,13 +816,48 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
     const curTemp = Number.isFinite(s.ovenTemp) ? Math.round(s.ovenTemp) + '°C' : '--';
     const setTemp = Math.round(Math.max(0, s.draftTemp)) + '°C';
 
-    // Timer tile value
+    // Timer tile
     let timerTileVal = s.mainTimer;
     const timerTileActive = s.programActive;
+    const timerSetInfo = s.timerSetLabel;
 
     // Delay tile
     const delayTileActive = s.programActive && (s.timerStateCode === 1 || s.timerStateCode === 2);
-    const delayVal = s.programActive ? (s.delayTimer || '00:00:00') : (s.startDelay > 0 ? this._fmtHM(s.startDelay) : 'Now');
+    let delayTileVal;
+    if (s.programActive) {
+      delayTileVal = (s.timerStateCode === 1) ? (s.delayTimer || '00:00:00') : 'Done';
+    } else {
+      delayTileVal = s.startDelay > 0 ? this._fmtHM(s.startDelay) : 'Now';
+    }
+    const delaySetInfo = s.delaySetLabel;
+
+    // Draft change display helpers
+    const draftChangeHtml = (changed, oldVal, newVal) => {
+      if (!changed) return '';
+      return `<div class="draft-change-row"><span class="draft-old">${oldVal}</span><span class="draft-arrow">→</span><span class="draft-new">${newVal}</span></div>`;
+    };
+
+    const timerDraftHtml = s.durationChanged
+      ? draftChangeHtml(true, this._fmtHM(s.activeCookTotal), this._fmtHM(s.cookDuration))
+      : '';
+    const delayDraftHtml = s.delayChanged
+      ? draftChangeHtml(true, this._fmtHM(s.activeDelayTotal), this._fmtHM(s.startDelay))
+      : '';
+
+    // Temperature draft change
+    const tempDraftHtml = s.tempChanged
+      ? `<div class="draft-change-row"><span class="draft-old">${Math.round(s.activeTemp)}°C</span><span class="draft-arrow">→</span><span class="draft-new">${Math.round(s.draftTemp)}°C</span></div>`
+      : '';
+
+    // Element draft change summary
+    const elemChangeParts = [];
+    if (s.topChanged) elemChangeParts.push(`<span class="${s.topOn ? 'elem-added' : 'elem-removed'}">Top</span>`);
+    if (s.bottomChanged) elemChangeParts.push(`<span class="${s.bottomOn ? 'elem-added' : 'elem-removed'}">Bottom</span>`);
+    if (s.grillChanged) elemChangeParts.push(`<span class="${s.grillOn ? 'elem-added' : 'elem-removed'}">Grill</span>`);
+    if (s.fanChanged) elemChangeParts.push(`<span class="${s.fanOn ? 'elem-added' : 'elem-removed'}">Fan</span>`);
+    const elemDraftHtml = elemChangeParts.length > 0
+      ? `<div class="draft-change-row">${elemChangeParts.join(' ')}</div>`
+      : '';
 
     // Arc thermostat values (for sheet)
     const target = this._dragging && this._dragTemp != null ? this._dragTemp : Math.round(s.draftTemp);
@@ -804,14 +915,19 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
       <span class="tile-lbl">Timer</span>
       <span class="tile-val">${timerTileVal}</span>
       ${s.subTimer ? `<span class="tile-lbl" style="margin-top:2px">${s.subTimer}</span>` : ''}
+      ${timerSetInfo ? `<span class="tile-lbl" style="margin-top:2px">Set: ${timerSetInfo}</span>` : ''}
+      ${timerDraftHtml}
     </div>
     <div class="tile${delayTileActive ? ' active' : ''}" data-action="open-delay">
       <span class="tile-lbl">Start Delay</span>
-      <span class="tile-val">${delayVal}</span>
+      <span class="tile-val">${delayTileVal}</span>
+      ${delaySetInfo ? `<span class="tile-lbl" style="margin-top:2px">Set: ${delaySetInfo}</span>` : ''}
+      ${delayDraftHtml}
     </div>
     <div class="tile${(s.topOn || s.bottomOn || s.grillOn || s.fanOn) ? ' active' : ''}" data-action="open-elements">
       <span class="tile-lbl">Elements</span>
       <span class="tile-val-text">${s.elementsSummary}</span>
+      ${elemDraftHtml}
     </div>
     <div class="tile" data-action="open-temperature">
       <div class="temp-tile-inner">
@@ -822,10 +938,13 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
         <div class="temp-col">
           <span class="temp-col-lbl">Set</span>
           <span class="temp-col-val temp-set">${setTemp}</span>
+          ${tempDraftHtml}
         </div>
       </div>
     </div>
   </div>
+
+  ${s.anyDraftChange ? '<div class="update-hint">DRAFT CHANGES — Press Update to apply</div>' : ''}
 
   <!-- Actions -->
   <div class="actions">

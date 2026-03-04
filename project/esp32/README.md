@@ -311,6 +311,8 @@ The following entities are exposed to Home Assistant:
 - Active Countdown Formatted (HH:MM:SS)
 - Delay Remaining (HH:MM:SS countdown for start delay)
 - Cook Remaining (HH:MM:SS countdown for cook duration)
+- Active Cook Total (minutes, what was applied)
+- Active Delay Total (minutes, what was applied)
 - Top/Bottom/Grill Element State (0=off, 1=selected, 2=armed, 3=heating)
 - Fan Element State (0=off, 1=selected, 2=active)
 - Oven Frame State (0=off, 1=selected, 2=active)

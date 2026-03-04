@@ -1567,6 +1567,24 @@ sensor:
     lambda: |-
       return id(active_temperature);
 
+  - platform: template
+    id: active_cook_total_sensor
+    name: "Active Cook Total"
+    unit_of_measurement: "min"
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return id(cook_total_seconds) / 60.0f;
+
+  - platform: template
+    id: active_delay_total_sensor
+    name: "Active Delay Total"
+    unit_of_measurement: "min"
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return id(delay_total_seconds) / 60.0f;
+
   # ── PID tuning readout sensors ──
   - platform: pid
     name: "PID Heat Output"
