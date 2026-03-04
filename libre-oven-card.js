@@ -1,5 +1,5 @@
 // =============================================================================
-// Libre Oven Card  v2.1.0
+// Libre Oven Card  v2.2.0
 // Inspired by the Midea AC Card architecture.
 //
 // Place this file in:  /config/www/libre-oven/libre-oven-card.js
@@ -381,18 +381,20 @@ class LibreOvenCard extends HTMLElement {
     const fanActiveInProgram = activeElOn(e.active_fan_element);
 
     const hasElSensors = hasValidState(e.active_top_element);
-    const topChanged = programActive && hasElSensors && topOn !== topActiveInProgram;
-    const bottomChanged = programActive && hasElSensors && bottomOn !== bottomActiveInProgram;
-    const grillChanged = programActive && hasElSensors && grillOn !== grillActiveInProgram;
-    const fanChanged = programActive && hasElSensors && fanOn !== fanActiveInProgram;
+    // Skip element change detection during WAITING — binary sensors can lag after apply.
+    const inWaiting = timerStateCode === 1;
+    const topChanged = programActive && !inWaiting && hasElSensors && topOn !== topActiveInProgram;
+    const bottomChanged = programActive && !inWaiting && hasElSensors && bottomOn !== bottomActiveInProgram;
+    const grillChanged = programActive && !inWaiting && hasElSensors && grillOn !== grillActiveInProgram;
+    const fanChanged = programActive && !inWaiting && hasElSensors && fanOn !== fanActiveInProgram;
 
-    // Grace period: don't show draft changes for 2.5s after program becomes active.
-    // Active sensors (cook_total, delay_total) update every 1s, so we need time for them to sync.
+    // Grace period: don't show draft changes for 5s after program becomes active.
+    // Active sensors (cook_total, delay_total) and binary sensors update on different cycles.
     if (this._prevTimerStateCode === 0 && timerStateCode !== 0) {
       this._lastProgramStartAt = Date.now();
     }
     this._prevTimerStateCode = timerStateCode;
-    const inGracePeriod = programActive && (Date.now() - this._lastProgramStartAt) < 2500;
+    const inGracePeriod = programActive && (Date.now() - this._lastProgramStartAt) < 5000;
 
     const anyDraftChange = !inGracePeriod && (tempChanged || durationChanged || delayChanged || topChanged || bottomChanged || grillChanged || fanChanged);
 
@@ -403,6 +405,13 @@ class LibreOvenCard extends HTMLElement {
     if (fanOn) elParts.push('Fan');
     const elementsSummary = elParts.length > 0 ? elParts.join(' + ') : 'None';
 
+    const activeElParts = [];
+    if (topActiveInProgram) activeElParts.push('Top');
+    if (bottomActiveInProgram) activeElParts.push('Bottom');
+    if (grillActiveInProgram) activeElParts.push('Grill');
+    if (fanActiveInProgram) activeElParts.push('Fan');
+    const elementsActiveSummary = activeElParts.length > 0 ? activeElParts.join(' + ') : 'None';
+
     return {
       ovenTemp, activeTemp, draftTemp, cookDuration, startDelay,
       activeCookTotal, activeDelayTotal,
@@ -410,7 +419,7 @@ class LibreOvenCard extends HTMLElement {
       topOn, bottomOn, grillOn, fanOn, anyHeating,
       topState, bottomState, grillState, fanState, frameState,
       mc, stateLabel, mainTimer, subTimer, delayTimer,
-      timerSetLabel, delaySetLabel, elementsSummary,
+      timerSetLabel, delaySetLabel, elementsSummary, elementsActiveSummary,
       tempChanged, durationChanged, delayChanged,
       topChanged, bottomChanged, grillChanged, fanChanged,
       topActiveInProgram, bottomActiveInProgram, grillActiveInProgram, fanActiveInProgram,
@@ -923,19 +932,22 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
       ? `<div class="draft-change-row"><span class="draft-old">${Math.round(s.activeTemp)}°C</span><span class="draft-arrow">→</span><span class="draft-new">${Math.round(s.draftTemp)}°C</span></div>`
       : '';
 
-    // Element draft change: show all four with colors (green=add, red+strikethrough=remove, white=unchanged)
+    // Elements display:
+    // Line 1 (white): when program running, show active elements (what's in the running program).
+    // Line 2 (when changes): diff — green=add, red+strikethrough=remove, white=unchanged.
     const hasElementChanges = s.topChanged || s.bottomChanged || s.grillChanged || s.fanChanged;
-    const elemClass = (on, changed, added) => {
+    const elemClass = (inDraft, inActive, changed) => {
       if (!changed) return 'elem-unchanged';
-      return added ? 'elem-added' : 'elem-removed';
+      return inDraft ? 'elem-added' : 'elem-removed';  // in draft but not active = add; in active but not draft = remove
     };
     const elemParts = [
-      `<span class="${elemClass(s.topOn, s.topChanged, s.topOn)}">Top</span>`,
-      `<span class="${elemClass(s.bottomOn, s.bottomChanged, s.bottomOn)}">Bottom</span>`,
-      `<span class="${elemClass(s.grillOn, s.grillChanged, s.grillOn)}">Grill</span>`,
-      `<span class="${elemClass(s.fanOn, s.fanChanged, s.fanOn)}">Fan</span>`,
+      `<span class="${elemClass(s.topOn, s.topActiveInProgram, s.topChanged)}">Top</span>`,
+      `<span class="${elemClass(s.bottomOn, s.bottomActiveInProgram, s.bottomChanged)}">Bottom</span>`,
+      `<span class="${elemClass(s.grillOn, s.grillActiveInProgram, s.grillChanged)}">Grill</span>`,
+      `<span class="${elemClass(s.fanOn, s.fanActiveInProgram, s.fanChanged)}">Fan</span>`,
     ];
-    const elemDisplayHtml = hasElementChanges
+    const elemLine1 = s.programActive ? s.elementsActiveSummary : s.elementsSummary;
+    const elemLine2Html = hasElementChanges
       ? `<div class="draft-change-row elem-list">${elemParts.join(' ')}</div>`
       : '';
 
@@ -1006,7 +1018,8 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
     </div>
     <div class="tile${(s.topOn || s.bottomOn || s.grillOn || s.fanOn) ? ' active' : ''}" data-action="open-elements">
       <span class="tile-lbl">Elements</span>
-      ${hasElementChanges ? elemDisplayHtml : `<span class="tile-val-text">${s.elementsSummary}</span>`}
+      <span class="tile-val-text">${elemLine1}</span>
+      ${elemLine2Html}
     </div>
     <div class="tile" data-action="open-temperature">
       <div class="temp-tile-inner">
