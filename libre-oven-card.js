@@ -32,6 +32,33 @@ const START_COLOR = '#4caf50';
 const STOP_COLOR = '#f44336';
 const DISABLED_COLOR = '#555';
 
+// Entity ID templates for base_name auto-discovery. {base} is replaced with the base_name.
+const ENTITY_TEMPLATES = {
+  oven_temperature: 'sensor.{base}_oven_temperature',
+  active_temperature: 'sensor.{base}_active_temperature',
+  timer_state: 'sensor.{base}_timer_state',
+  timer_state_code: 'sensor.{base}_timer_state_code',
+  active_countdown: 'sensor.{base}_active_countdown',
+  delay_remaining: 'sensor.{base}_delay_remaining',
+  cook_remaining: 'sensor.{base}_cook_remaining',
+  active_cook_total: 'sensor.{base}_active_cook_total',
+  active_delay_total: 'sensor.{base}_active_delay_total',
+  set_temperature: 'number.{base}_set_temperature',
+  cook_duration: 'number.{base}_cook_duration',
+  start_delay: 'number.{base}_start_delay',
+  top_element_selected: 'switch.{base}_top_element_selected',
+  bottom_element_selected: 'switch.{base}_bottom_element_selected',
+  grill_element_selected: 'switch.{base}_grill_element_selected',
+  fan_selected: 'switch.{base}_fan_selected',
+  apply_program: 'button.{base}_apply_program',
+  cancel_program: 'button.{base}_cancel_program',
+  top_element_state: 'sensor.{base}_top_element_state',
+  bottom_element_state: 'sensor.{base}_bottom_element_state',
+  grill_element_state: 'sensor.{base}_grill_element_state',
+  fan_element_state: 'sensor.{base}_fan_element_state',
+  frame_state: 'sensor.{base}_oven_frame_state',
+};
+
 // ── SVG arc helpers (from AC card) ───────────────────────────────────────────
 
 function pt(cx, cy, r, deg) {
@@ -70,22 +97,37 @@ class LibreOvenCard extends HTMLElement {
     this._delayTimer = null;
     this._elemOptimistic = {};
     this._elemTimers = {};
+    this._prevTimerStateCode = 0;
+    this._lastProgramStartAt = 0;
   }
 
   static getStubConfig() {
     return {
-      entities: {
-        oven_temperature: 'sensor.libre_oven_oven_temperature',
-        timer_state_code: 'sensor.libre_oven_timer_state_code',
-      },
+      base_name: 'libre_oven',
     };
   }
 
   getCardSize() { return 6; }
 
   setConfig(cfg) {
-    if (!cfg.entities) throw new Error("libre-oven-card: 'entities' is required");
-    this._config = cfg;
+    if (!cfg.entities && !cfg.base_name) {
+      throw new Error("libre-oven-card: 'entities' or 'base_name' is required");
+    }
+    const base = (cfg.base_name || '').replace(/-/g, '_');
+    let entities;
+    if (cfg.entities) {
+      entities = { ...cfg.entities };
+    } else {
+      entities = {};
+    }
+    if (base) {
+      for (const [key, template] of Object.entries(ENTITY_TEMPLATES)) {
+        if (!entities[key]) {
+          entities[key] = template.replace(/\{base\}/g, base);
+        }
+      }
+    }
+    this._config = { ...cfg, entities };
   }
 
   set hass(hass) {
@@ -303,9 +345,24 @@ class LibreOvenCard extends HTMLElement {
     }
 
     // Draft-change detection (only meaningful when a program is running)
-    const tempChanged = programActive && Math.round(draftTemp) !== Math.round(activeTemp);
-    const durationChanged = programActive && Math.round(cookDuration) !== Math.round(activeCookTotal);
-    const delayChanged = programActive && Math.round(startDelay) !== Math.round(activeDelayTotal);
+    // Only flag as changed when we have valid active sensor data to compare against.
+    // If active sensors are missing or stale, we avoid false positives.
+    const hasValidState = (entityId) => {
+      if (!entityId || !this._hass?.states?.[entityId]) return false;
+      const st = this._hass.states[entityId].state;
+      return st !== 'unknown' && st !== 'unavailable';
+    };
+
+    const tempChanged = programActive && hasValidState(e.active_temperature) &&
+      Math.round(draftTemp) !== Math.round(activeTemp);
+
+    const hasValidActiveCook = hasValidState(e.active_cook_total);
+    const durationChanged = programActive && hasValidActiveCook &&
+      Math.round(cookDuration) !== Math.round(activeCookTotal);
+
+    const hasValidActiveDelay = hasValidState(e.active_delay_total);
+    const delayChanged = programActive && hasValidActiveDelay &&
+      Math.round(startDelay) !== Math.round(activeDelayTotal);
 
     const elStateCode = (id) => {
       if (!id || !hasSensor(id)) return -1;
@@ -321,7 +378,16 @@ class LibreOvenCard extends HTMLElement {
     const bottomChanged = programActive && hasElSensors && bottomOn !== bottomActiveInProgram;
     const grillChanged = programActive && hasElSensors && grillOn !== grillActiveInProgram;
     const fanChanged = programActive && hasElSensors && fanOn !== fanActiveInProgram;
-    const anyDraftChange = tempChanged || durationChanged || delayChanged || topChanged || bottomChanged || grillChanged || fanChanged;
+
+    // Grace period: don't show draft changes for 2.5s after program becomes active.
+    // Active sensors (cook_total, delay_total) update every 1s, so we need time for them to sync.
+    if (this._prevTimerStateCode === 0 && timerStateCode !== 0) {
+      this._lastProgramStartAt = Date.now();
+    }
+    this._prevTimerStateCode = timerStateCode;
+    const inGracePeriod = programActive && (Date.now() - this._lastProgramStartAt) < 2500;
+
+    const anyDraftChange = !inGracePeriod && (tempChanged || durationChanged || delayChanged || topChanged || bottomChanged || grillChanged || fanChanged);
 
     const elParts = [];
     if (topOn) elParts.push('Top');

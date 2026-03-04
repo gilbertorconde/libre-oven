@@ -47,11 +47,20 @@ resources:
 
 ### Add the card to your dashboard
 
-**Device-based (recommended):** Pass any entity from the oven device; the card discovers the rest automatically:
+**Base name (recommended):** Pass the device base name; the card auto-discovers all entities:
 
 ```yaml
 type: custom:libre-oven-card
-device: sensor.libre_oven_oven_temperature
+base_name: libre_oven
+```
+
+The base name is the ESPHome device name with hyphens replaced by underscores (e.g. `libre-oven` → `libre_oven`). All sensors, numbers, switches, and buttons are derived automatically. Override specific entities if needed:
+
+```yaml
+type: custom:libre-oven-card
+base_name: libre_oven
+entities:
+  set_temperature: number.custom_temp_entity  # override just this one
 ```
 
 **Explicit entities:** For custom setups, paste the full entity map:
@@ -86,7 +95,7 @@ entities:
   frame_state: sensor.libre_oven_oven_frame_state
 ```
 
-If your device name differs from `libre_oven`, update the entity IDs accordingly.
+If your device name differs from `libre_oven`, use `base_name: your_device_name` or update the entity IDs in the explicit config.
 
 ---
 
