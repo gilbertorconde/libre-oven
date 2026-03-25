@@ -102,6 +102,7 @@ class LibreOvenCard extends HTMLElement {
     this._sheet = null;
     this._dragging = false;
     this._dragTemp = null;
+    this._optimisticCookMode = null;
     this._durationTimer = null;
     this._delayTimer = null;
     this._foodTargetTimer = null;
@@ -152,6 +153,15 @@ class LibreOvenCard extends HTMLElement {
         clearTimeout(this._elemTimers[eid]);
         delete this._elemOptimistic[eid];
         delete this._elemTimers[eid];
+      }
+    }
+
+    // Reconcile optimistic cook mode
+    if (this._optimisticCookMode !== null) {
+      const e = this._config.entities;
+      const realMode = Number.parseFloat(hass.states[e.cook_mode]?.state ?? '-1');
+      if (realMode === this._optimisticCookMode) {
+        this._optimisticCookMode = null;
       }
     }
 
@@ -433,7 +443,7 @@ class LibreOvenCard extends HTMLElement {
       foodTemp: n(gs(e.food_probe_temperature, 'nan'), NaN),
       foodProbeConnected: gs(e.food_probe_connected, 'off') === 'on',
       foodTarget: n(gs(e.food_target_temperature, '0'), 0),
-      cookMode: n(gs(e.cook_mode, '0'), 0),
+      cookMode: this._optimisticCookMode !== null ? this._optimisticCookMode : n(gs(e.cook_mode, '0'), 0),
     };
   }
 
@@ -728,6 +738,11 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
   border-color: var(--mode-color);
   background: var(--chip-bg);
   color: var(--mode-color);
+}
+.pill.mode-pill.active {
+  border-color: #4caf50;
+  background: rgba(76, 175, 80, 0.15);
+  color: #4caf50;
 }
 
 /* ── Number control in sheet ── */
@@ -1086,8 +1101,16 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
   <!-- Timer Sheet (Cook Duration + Cook Mode) -->
   <div class="sheet" data-sheet="timer">
     <div class="sheet-handle"></div>
+    <div class="sheet-title">${s.foodProbeConnected ? 'Cook Settings' : 'Cook Duration'}</div>
+    ${s.foodProbeConnected ? `
+    <div class="sheet-sec">Cook Mode</div>
+    <div class="pill-row">
+      <button class="pill mode-pill${s.cookMode === 0 ? ' active' : ''}" data-action="set-cook-mode-timer">Timer</button>
+      <button class="pill mode-pill${s.cookMode === 1 ? ' active' : ''}" data-action="set-cook-mode-probe">Probe</button>
+    </div>
+    ` : ''}
     ${!s.foodProbeConnected || s.cookMode === 0 ? `
-    <div class="sheet-title">Cook Duration</div>
+    <div class="sheet-sec">Duration</div>
     <div class="num-control">
       <div class="num-field" style="width:100%;justify-content:center">
         <button class="num-btn num-btn-wide" data-action="duration-down-10">−10</button>
@@ -1100,16 +1123,7 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
       </div>
     </div>
     ` : `
-    <div class="sheet-title">Food Probe</div>
-    `}
-    ${s.foodProbeConnected ? `
-    <div class="sheet-sec" style="margin-top:16px">Cook Mode</div>
-    <div class="pill-row">
-      <button class="pill${s.cookMode === 0 ? ' active' : ''}" data-action="set-cook-mode-timer">Timer</button>
-      <button class="pill${s.cookMode === 1 ? ' active' : ''}" data-action="set-cook-mode-probe">Probe</button>
-    </div>
-    ${s.cookMode === 1 ? `
-    <div class="sheet-sec" style="margin-top:12px">Food Target Temperature</div>
+    <div class="sheet-sec">Food Target Temperature</div>
     <div class="num-control">
       <div class="num-field" style="width:100%;justify-content:center">
         <button class="num-btn num-btn-wide" data-action="food-target-down-10">−10</button>
@@ -1124,8 +1138,7 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
     <div class="probe-live" style="text-align:center;margin-top:8px;color:var(--secondary-text-color,#aaa);font-size:13px">
       Food now: ${Number.isFinite(s.foodTemp) ? Math.round(s.foodTemp) + '°C' : '--'}
     </div>
-    ` : ''}
-    ` : ''}
+    `}
   </div>
 
   <!-- Delay Sheet (Start Delay only) -->
@@ -1339,8 +1352,9 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
       case 'temp-down': {
         const displayed = this.shadowRoot.getElementById('arc-temp-val');
         const cur = displayed ? Number(displayed.textContent) || 0 : this._asNumber(this._getState(ent.set_temperature, '0'), 0);
-        const step = action === 'temp-up' ? 5 : -5;
-        const next = clamp(Math.round(cur) + step, MIN_TEMP, MAX_TEMP);
+        const next = action === 'temp-up'
+          ? clamp(Math.ceil((cur + 1) / 5) * 5, MIN_TEMP, MAX_TEMP)
+          : clamp(Math.floor((cur - 1) / 5) * 5, MIN_TEMP, MAX_TEMP);
         this._updateDialArc(next);
         this._call('number', 'set_value', { entity_id: ent.set_temperature, value: next });
         break;
@@ -1401,11 +1415,13 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
       // Cook mode
       case 'set-cook-mode-timer':
         if (ent.cook_mode) this._call('number', 'set_value', { entity_id: ent.cook_mode, value: 0 });
-        setTimeout(() => this._render(), 150);
+        this._optimisticCookMode = 0;
+        this._openSheet('timer');
         break;
       case 'set-cook-mode-probe':
         if (ent.cook_mode) this._call('number', 'set_value', { entity_id: ent.cook_mode, value: 1 });
-        setTimeout(() => this._render(), 150);
+        this._optimisticCookMode = 1;
+        this._openSheet('timer');
         break;
 
       // Food target +/-

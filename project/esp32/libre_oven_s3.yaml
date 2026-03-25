@@ -2140,7 +2140,7 @@ script:
               if (id(timer_delay_remaining) > 0) {
                 id(timer_state) = 1;
               } else {
-                id(preheat_ramp_setpoint) = id(current_oven_temp);
+                id(preheat_ramp_setpoint) = id(current_oven_temp) + 16.0f;
                 id(timer_state) = 2;
               }
             }
@@ -2167,7 +2167,7 @@ script:
                 bool needs_preheat = id(active_temperature) > 0.0f &&
                   (id(active_top_element) || id(active_bottom_element) || id(active_grill_element));
                 if (needs_preheat) {
-                  id(preheat_ramp_setpoint) = id(current_oven_temp);
+                  id(preheat_ramp_setpoint) = id(current_oven_temp) + 16.0f;
                   id(timer_state) = 2;
                 } else {
                   id(timer_state) = 4;
@@ -2315,7 +2315,7 @@ interval:
               id(timer_delay_remaining) = 0;
               bool needs_preheat = target > 0.0f && heating_elements_selected;
               if (needs_preheat) {
-                id(preheat_ramp_setpoint) = current_temp;
+                id(preheat_ramp_setpoint) = current_temp + 16.0f;
                 id(timer_state) = 2;
               } else {
                 id(timer_state) = 4;
@@ -2328,12 +2328,11 @@ interval:
             }
 
             // Ramp the setpoint toward target at preheat_ramp_rate °C/min.
-            // Adaptive: only advance if the oven is within 5°C of the ramp setpoint.
-            // This prevents the setpoint from running ahead of reality, which would
-            // saturate the integral term and cause overshoot at the target.
+            // Adaptive: only advance if the oven is within 15°C of the ramp setpoint.
+            // Must exceed deadband threshold_high (5°C) so PID gets full gains during ramp.
             float ramp_step = id(preheat_ramp_rate) / 60.0f;
             float ramp_error = id(preheat_ramp_setpoint) - current_temp;
-            if (ramp_error < 5.0f) {
+            if (ramp_error < 15.0f) {
               id(preheat_ramp_setpoint) += ramp_step;
               if (id(preheat_ramp_setpoint) > target) {
                 id(preheat_ramp_setpoint) = target;
