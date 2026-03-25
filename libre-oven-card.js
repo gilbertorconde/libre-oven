@@ -1,5 +1,5 @@
 // =============================================================================
-// Libre Oven Card  v2.2.0
+// Libre Oven Card  v2.3.0
 // Inspired by the Midea AC Card architecture.
 //
 // Place this file in:  /config/www/libre-oven/libre-oven-card.js
@@ -52,6 +52,7 @@ const ENTITY_TEMPLATES = {
   fan_selected: 'switch.{base}_fan_selected',
   apply_program: 'button.{base}_apply_program',
   cancel_program: 'button.{base}_cancel_program',
+  start_cooking: 'button.{base}_start_cooking',
   top_element_state: 'sensor.{base}_top_element_state',
   bottom_element_state: 'sensor.{base}_bottom_element_state',
   grill_element_state: 'sensor.{base}_grill_element_state',
@@ -61,6 +62,10 @@ const ENTITY_TEMPLATES = {
   active_bottom_element: 'binary_sensor.{base}_active_bottom_element',
   active_grill_element: 'binary_sensor.{base}_active_grill_element',
   active_fan_element: 'binary_sensor.{base}_active_fan_element',
+  food_probe_temperature: 'sensor.{base}_food_probe_temperature',
+  food_probe_connected: 'binary_sensor.{base}_food_probe_connected',
+  food_target_temperature: 'number.{base}_food_target_temperature',
+  cook_mode: 'number.{base}_cook_mode',
 };
 
 // ── SVG arc helpers (from AC card) ───────────────────────────────────────────
@@ -99,6 +104,7 @@ class LibreOvenCard extends HTMLElement {
     this._dragTemp = null;
     this._durationTimer = null;
     this._delayTimer = null;
+    this._foodTargetTimer = null;
     this._elemOptimistic = {};
     this._elemTimers = {};
     this._prevTimerStateCode = 0;
@@ -169,6 +175,7 @@ class LibreOvenCard extends HTMLElement {
   disconnectedCallback() {
     clearTimeout(this._durationTimer);
     clearTimeout(this._delayTimer);
+    clearTimeout(this._foodTargetTimer);
     for (const t of Object.values(this._elemTimers)) clearTimeout(t);
   }
 
@@ -423,6 +430,10 @@ class LibreOvenCard extends HTMLElement {
       topChanged, bottomChanged, grillChanged, fanChanged,
       topActiveInProgram, bottomActiveInProgram, grillActiveInProgram, fanActiveInProgram,
       anyDraftChange,
+      foodTemp: n(gs(e.food_probe_temperature, 'nan'), NaN),
+      foodProbeConnected: gs(e.food_probe_connected, 'off') === 'on',
+      foodTarget: n(gs(e.food_target_temperature, '0'), 0),
+      cookMode: n(gs(e.cook_mode, '0'), 0),
     };
   }
 
@@ -596,6 +607,7 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
 }
 .temp-current { color: #ff8566; }
 .temp-set { color: var(--primary-text-color); }
+.temp-food { color: #4caf50; }
 
 /* ── Action buttons (bottom row) ── */
 .actions {
@@ -903,6 +915,15 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
     const timerTileActive = s.programActive;
     const timerSetInfo = s.timerSetLabel;
 
+    // Probe mode: override timer display during cooking
+    let probeDisplayHtml = '';
+    if (s.foodProbeConnected && s.cookMode === 1 && s.programActive && s.timerStateCode === 4) {
+      const foodStr = Number.isFinite(s.foodTemp) ? Math.round(s.foodTemp) + '°C' : '--';
+      const targetStr = s.foodTarget > 0 ? Math.round(s.foodTarget) + '°C' : '--';
+      timerTileVal = `${foodStr} → ${targetStr}`;
+      probeDisplayHtml = '<span class="tile-lbl" style="margin-top:2px">Probe mode</span>';
+    }
+
     // Delay tile
     const delayTileActive = s.programActive && (s.timerStateCode === 1 || s.timerStateCode === 2);
     let delayTileVal;
@@ -967,9 +988,10 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
     const [hx, hy] = pt(CX, CY, R, ARC_START + (fillSweep < 0.5 ? 0 : fillSweep));
 
     // Button states
+    const inReady = s.timerStateCode === 3;
     const canStart = !s.programActive && (s.topOn || s.bottomOn || s.grillOn || s.fanOn);
-    const startClass = s.programActive ? 'start-running' : (canStart ? 'start-active' : 'start-disabled');
-    const startLabel = s.programActive ? '↻ Update' : '▶ Start';
+    const startClass = inReady ? 'start-active' : (s.programActive ? 'start-running' : (canStart ? 'start-active' : 'start-disabled'));
+    const startLabel = inReady ? '▶ Start Cooking' : (s.programActive ? '↻ Update' : '▶ Start');
     const stopClass = s.programActive ? 'stop-active' : 'stop-idle';
 
     return `
@@ -1011,6 +1033,7 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
     <div class="tile${timerTileActive ? ' active' : ''}" data-action="open-timer">
       <span class="tile-lbl">Timer</span>
       <span class="tile-val">${timerTileVal}</span>
+      ${probeDisplayHtml}
       ${s.subTimer ? `<span class="tile-lbl" style="margin-top:2px">${s.subTimer}</span>` : ''}
       ${timerSetInfo ? `<span class="tile-lbl" style="margin-top:2px">Set: ${timerSetInfo}</span>` : ''}
       ${timerDraftHtml}
@@ -1037,6 +1060,10 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
           <span class="temp-col-val temp-set">${setTemp}</span>
           ${tempDraftHtml}
         </div>
+        ${s.foodProbeConnected ? `<div class="temp-col">
+          <span class="temp-col-lbl">Food</span>
+          <span class="temp-col-val temp-food">${Number.isFinite(s.foodTemp) ? Math.round(s.foodTemp) + '°C' : '--'}</span>
+        </div>` : ''}
       </div>
     </div>
   </div>
@@ -1056,7 +1083,7 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
   <!-- Overlay -->
   <div class="overlay" id="overlay"></div>
 
-  <!-- Timer Sheet (Cook Duration only) -->
+  <!-- Timer Sheet (Cook Duration + Cook Mode) -->
   <div class="sheet" data-sheet="timer">
     <div class="sheet-handle"></div>
     <div class="sheet-title">Cook Duration</div>
@@ -1071,6 +1098,30 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
         <button class="num-btn num-btn-wide" data-action="duration-up-10">+10</button>
       </div>
     </div>
+    ${s.foodProbeConnected ? `
+    <div class="sheet-sec" style="margin-top:16px">Cook Mode</div>
+    <div class="pill-row">
+      <button class="pill${s.cookMode === 0 ? ' active' : ''}" data-action="set-cook-mode-timer">Timer</button>
+      <button class="pill${s.cookMode === 1 ? ' active' : ''}" data-action="set-cook-mode-probe">Probe</button>
+    </div>
+    ${s.cookMode === 1 ? `
+    <div class="sheet-sec" style="margin-top:12px">Food Target Temperature</div>
+    <div class="num-control">
+      <div class="num-field" style="width:100%;justify-content:center">
+        <button class="num-btn num-btn-wide" data-action="food-target-down-10">−10</button>
+        <button class="num-btn" data-action="food-target-down">−</button>
+        <input class="num-input" id="food-target-input" type="number" min="0" max="300"
+               value="${Math.round(s.foodTarget)}" data-entity="${e.food_target_temperature || ''}">
+        <span class="num-unit">°C</span>
+        <button class="num-btn" data-action="food-target-up">+</button>
+        <button class="num-btn num-btn-wide" data-action="food-target-up-10">+10</button>
+      </div>
+    </div>
+    <div class="probe-live" style="text-align:center;margin-top:8px;color:var(--secondary-text-color,#aaa);font-size:13px">
+      Food now: ${Number.isFinite(s.foodTemp) ? Math.round(s.foodTemp) + '°C' : '--'}
+    </div>
+    ` : ''}
+    ` : ''}
   </div>
 
   <!-- Delay Sheet (Start Delay only) -->
@@ -1328,6 +1379,10 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
       // Program actions
       case 'start-program': {
         const s = this._readState();
+        if (s.timerStateCode === 3 && ent.start_cooking) {
+          this._call('button', 'press', { entity_id: ent.start_cooking });
+          break;
+        }
         if (!s.topOn && !s.bottomOn && !s.grillOn && !s.fanOn) return;
         if (ent.apply_program) this._call('button', 'press', { entity_id: ent.apply_program });
         break;
@@ -1336,6 +1391,26 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
         const s = this._readState();
         if (!s.programActive) return;
         if (ent.cancel_program) this._call('button', 'press', { entity_id: ent.cancel_program });
+        break;
+      }
+
+      // Cook mode
+      case 'set-cook-mode-timer':
+        if (ent.cook_mode) this._call('number', 'set_value', { entity_id: ent.cook_mode, value: 0 });
+        setTimeout(() => this._render(), 150);
+        break;
+      case 'set-cook-mode-probe':
+        if (ent.cook_mode) this._call('number', 'set_value', { entity_id: ent.cook_mode, value: 1 });
+        setTimeout(() => this._render(), 150);
+        break;
+
+      // Food target +/-
+      case 'food-target-up':
+      case 'food-target-up-10':
+      case 'food-target-down':
+      case 'food-target-down-10': {
+        const delta = action === 'food-target-up' ? 1 : action === 'food-target-up-10' ? 10 : action === 'food-target-down' ? -1 : -10;
+        this._adjustNumberInput('food-target-input', ent.food_target_temperature, delta, 0, 300);
         break;
       }
     }
@@ -1373,6 +1448,13 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
         input.value = String(v);
         if (ent.start_delay) this._call('number', 'set_value', { entity_id: ent.start_delay, value: v });
       }, 400);
+    } else if (id === 'food-target-input') {
+      clearTimeout(this._foodTargetTimer);
+      this._foodTargetTimer = setTimeout(() => {
+        const v = Math.max(0, Math.min(300, Math.round(Number.parseFloat(input.value) || 0)));
+        input.value = String(v);
+        if (ent.food_target_temperature) this._call('number', 'set_value', { entity_id: ent.food_target_temperature, value: v });
+      }, 400);
     }
   }
 
@@ -1393,6 +1475,11 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
       const v = Math.max(0, Math.min(1439, Math.round(Number.parseFloat(input.value) || 0)));
       input.value = String(v);
       if (ent.start_delay) this._call('number', 'set_value', { entity_id: ent.start_delay, value: v });
+    } else if (id === 'food-target-input') {
+      clearTimeout(this._foodTargetTimer);
+      const v = Math.max(0, Math.min(300, Math.round(Number.parseFloat(input.value) || 0)));
+      input.value = String(v);
+      if (ent.food_target_temperature) this._call('number', 'set_value', { entity_id: ent.food_target_temperature, value: v });
     }
   }
 }

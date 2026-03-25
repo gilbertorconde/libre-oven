@@ -133,7 +133,6 @@ output:
     pin: GPIO6
 
   # PID heat output: time-proportioning for SSR control.
-  # 30s cycle means e.g. 60% duty = 18s ON / 12s OFF.
   - platform: slow_pwm
     id: pid_heat_output
     period: 10s
@@ -158,12 +157,28 @@ light:
     default_transition_length: 0s
 
 # PID Climate Controller
+# Autotune results (PWM period: 2s, sensor rate: 500ms):
+#   control_parameters:
+#     kp: 0.06067
+#     ki: 0.00026
+#     kd: 3.59330
+#
+#   Alternative Rules:
+#     Rule 'Ziegler-Nichols PI':
+#       kp: 0.04550, ki: 0.00012, kd: 0.00000
+#     Rule 'Pessen Integral PID':
+#       kp: 0.07078, ki: 0.00037, kd: 5.03062
+#     Rule 'Some Overshoot PID':
+#       kp: 0.03367, ki: 0.00014, kd: 5.31808
+#     Rule 'No Overshoot PID':
+#       kp: 0.02022, ki: 0.00009, kd: 2.99441
+#
+# Previous autotune results (PWM period: 10s, sensor rate: 1s):
 #   control_parameters:
 #     kp: 0.06512
 #     ki: 0.00032
 #     kd: 3.36308
 #
-#   Please copy these values into your YAML configuration! They will reset on the next reboot.
 #   Alternative Rules:
 #     Rule 'Ziegler-Nichols PI':
 #       kp: 0.04884, ki: 0.00014, kd: 0.00000
@@ -181,14 +196,17 @@ climate:
     default_target_temperature: 200°C
     heat_output: pid_heat_output
     control_parameters:
-      kp: 0.03614
-      ki: 0.00018
-      kd: 2.80257
-      output_averaging_samples: 5
-      derivative_averaging_samples: 5
+      kp: 0.03367
+      ki: 0.00014
+      kd: 5.31808
+      min_integral: -0.3
+      max_integral: 0.3
+      output_averaging_samples: 10
+      derivative_averaging_samples: 10
     deadband_parameters:
-      threshold_high: 1.0°C
-      threshold_low: -1.0°C
+      threshold_high: 5.0°C
+      threshold_low: -5.0°C
+      kp_multiplier: 0.05
       ki_multiplier: 0.05
       deadband_output_averaging_samples: 15
 
@@ -628,6 +646,21 @@ display:
           it.print(62, timer_start_y + timer_countdown_height + timer_spacing,
                    id(font_small), id(text_color), TextAlign::TOP_CENTER,
                    "Press to start");
+        } else if (id(timer_state) == 4 && id(cook_mode) == 1 && !std::isnan(id(current_food_temp))) {
+          // Probe mode cooking: show food temp → target
+          float ft = id(current_food_temp);
+          float ft_target = id(food_target_temperature);
+          it.printf(62, timer_start_y, id(font_large), id(on_element),
+                    TextAlign::TOP_CENTER, "%.0f°C", ft);
+          if (ft_target > 0.0f) {
+            it.printf(62, timer_start_y + timer_countdown_height + timer_spacing,
+                      id(font_small), id(text_color), TextAlign::TOP_CENTER,
+                      "Target: %.0f°C", ft_target);
+          } else {
+            it.print(62, timer_start_y + timer_countdown_height + timer_spacing,
+                     id(font_small), id(text_color), TextAlign::TOP_CENTER,
+                     "PROBE MODE");
+          }
         } else {
           int hours = shown_sec / 3600;
           int rem_sec = shown_sec % 3600;
@@ -636,9 +669,11 @@ display:
           it.printf(62, timer_start_y, id(font_large), timer_color,
                     TextAlign::TOP_CENTER, "%02d:%02d:%02d", hours, mins, secs);
         }
-        // Total programmed cook time (skip in ready state -- sub-message already shown)
+        // Total programmed cook time (skip in ready state and probe-mode cooking)
         if (id(timer_state) == 3) {
           // Already displayed "Press to start" above
+        } else if (id(timer_state) == 4 && id(cook_mode) == 1 && !std::isnan(id(current_food_temp))) {
+          // Probe mode: sub-message already shown above
         } else if (id(cook_total_seconds) <= 0) {
           it.print(62, timer_start_y + timer_countdown_height + timer_spacing,
                    id(font_small), id(text_color), TextAlign::TOP_CENTER,
@@ -715,6 +750,12 @@ display:
 
         // Current real temp (small, yellow) - below main temp
         it.printf(62, current_temp_y, id(font_small), id(hot_element), TextAlign::TOP_CENTER, "%.0f°C", current_temp);
+
+        // Food probe temperature (only if probe is connected)
+        if (!std::isnan(id(current_food_temp))) {
+          it.printf(62, current_temp_y + 18, id(font_small), id(on_element), TextAlign::TOP_CENTER,
+                    "Food: %.0f°C", id(current_food_temp));
+        }
       }
 
       // ═══════════════════════════════════════════════════════════
@@ -781,6 +822,25 @@ display:
             int hours = total / 60;
             int mins = total % 60;
             it.printf(cx, 148, id(font_large), col, TextAlign::TOP_CENTER, "%02d:%02d", hours, mins);
+          }
+        }
+
+        // Cook mode indicator (only when food probe is connected)
+        bool probe_plugged = !std::isnan(id(current_food_temp));
+        if (probe_plugged) {
+          bool is_probe_mode = (id(cook_mode) == 1);
+          Color mode_color = is_probe_mode ? id(on_element) : id(text_color);
+          it.printf(cx, 195, id(font_small), mode_color, TextAlign::TOP_CENTER,
+                    "Mode: %s", is_probe_mode ? "PROBE" : "TIMER");
+          if (is_probe_mode) {
+            float ft = id(food_target_temperature);
+            if (ft > 0.0f) {
+              it.printf(cx, 213, id(font_small), id(on_element), TextAlign::TOP_CENTER,
+                        "Target: %.0f°C", ft);
+            } else {
+              it.print(cx, 213, id(font_small), id(off_element), TextAlign::TOP_CENTER,
+                       "No target set");
+            }
           }
         }
 
@@ -1090,24 +1150,52 @@ globals:
     restore_value: yes
     initial_value: "0"
 
-  # Preheat timeout tuning:
-  #  - 0 disables timeout
-  #  - >0 forces transition to COOKING after this many minutes in PREHEATING
-  - id: preheat_timeout_minutes
-    type: float
-    restore_value: yes
-    initial_value: "20.0"
-
   # Runtime counter for current preheat phase duration.
   - id: preheat_elapsed_seconds
     type: int
     restore_value: no
     initial_value: "0"
 
+  # Preheat ramp: PID setpoint ramps from current temp toward target at this rate.
+  # 6°C/min. Keeps PID error small, preventing integral windup and overshoot.
+  - id: preheat_ramp_setpoint
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+
+  - id: preheat_ramp_rate
+    type: float
+    restore_value: yes
+    initial_value: "6.0"
+
   - id: pid_heat_was_active
     type: bool
     restore_value: no
     initial_value: "false"
+
+  # Food probe temperature (updated from NTC via ADC)
+  - id: current_food_temp
+    type: float
+    restore_value: no
+    initial_value: "NAN"
+
+  # Food probe target temperature (0 = disabled)
+  - id: food_target_temperature
+    type: float
+    restore_value: yes
+    initial_value: "0.0"
+
+  # Cook mode: 0 = timer (default), 1 = food probe
+  - id: cook_mode
+    type: int
+    restore_value: yes
+    initial_value: "0"
+
+  # NTC B-constant for the food probe (configurable via web server / HA)
+  - id: food_probe_b_constant
+    type: float
+    restore_value: yes
+    initial_value: "3435.0"
 
   # Cooling fan (light relay) stays on until temp drops below this threshold
   - id: cooldown_temp_threshold
@@ -1210,7 +1298,7 @@ sensor:
     accuracy_decimals: 1
     cs_pin: GPIO17
     spi_id: spi_max31865
-    update_interval: 1s
+    update_interval: 500ms
     reference_resistance: 430 Ω
     rtd_nominal_resistance: 100 Ω
     rtd_wires: 3
@@ -1227,6 +1315,57 @@ sensor:
       then:
         - lambda: |-
             id(current_oven_temp) = x;
+
+  # NTC 10K food probe via voltage divider on GPIO7.
+  # 3.3V → 10K resistor → GPIO7 → NTC probe (2.5mm jack) → GND.
+  # When probe is unplugged, readings are out of range → NaN.
+  - platform: adc
+    id: food_probe_adc
+    pin: GPIO7
+    attenuation: 12db
+    update_interval: 2s
+    internal: true
+
+  - platform: resistance
+    id: food_probe_resistance
+    sensor: food_probe_adc
+    configuration: DOWNSTREAM
+    resistor: 10kOhm
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            // Steinhart-Hart simplified (B-parameter): T = 1 / (1/T0 + (1/B)*ln(R/R0))
+            float R = x;
+            if (std::isnan(R) || R < 1.0f || R > 1000000.0f) {
+              id(current_food_temp) = NAN;
+              id(food_probe_temperature).publish_state(NAN);
+              return;
+            }
+            float B = id(food_probe_b_constant);
+            float R0 = 10000.0f;
+            float T0 = 298.15f;  // 25°C in Kelvin
+            float t_kelvin = 1.0f / ((1.0f / T0) + (1.0f / B) * logf(R / R0));
+            float t_celsius = t_kelvin - 273.15f;
+            if (t_celsius < -10.0f || t_celsius > 300.0f) {
+              id(current_food_temp) = NAN;
+              id(food_probe_temperature).publish_state(NAN);
+              return;
+            }
+            id(current_food_temp) = t_celsius;
+            id(food_probe_temperature).publish_state(t_celsius);
+
+  - platform: template
+    id: food_probe_temperature
+    name: "Food Probe Temperature"
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    update_interval: never
+    filters:
+      - median:
+          window_size: 5
+          send_every: 1
+          send_first_at: 1
 
   # Runtime temperature exposed to HA as the current oven temperature.
   # Fed by MAX31865 PT100 via current_oven_temp global.
@@ -1683,22 +1822,54 @@ number:
           id(working_start_delay) = x;
 
   - platform: template
-    id: ha_preheat_timeout_minutes
-    name: "Preheat Timeout"
-    icon: "mdi:timer-sand"
-    unit_of_measurement: "min"
+    id: ha_food_target_temperature
+    name: "Food Target Temperature"
+    icon: "mdi:thermometer-check"
+    unit_of_measurement: "°C"
     min_value: 0
-    max_value: 240
+    max_value: 300
     step: 1
     mode: box
     update_interval: 1s
     lambda: |-
-      return id(preheat_timeout_minutes);
+      return id(food_target_temperature);
     set_action:
       - lambda: |-
           if (x < 0) x = 0;
-          if (x > 240) x = 240;
-          id(preheat_timeout_minutes) = x;
+          if (x > 300) x = 300;
+          id(food_target_temperature) = x;
+
+  - platform: template
+    id: ha_cook_mode
+    name: "Cook Mode"
+    icon: "mdi:swap-horizontal"
+    min_value: 0
+    max_value: 1
+    step: 1
+    mode: box
+    update_interval: 1s
+    lambda: |-
+      return id(cook_mode);
+    set_action:
+      - lambda: |-
+          id(cook_mode) = (int)x;
+
+  - platform: template
+    id: ha_food_probe_b_constant
+    name: "Food Probe B-Constant"
+    icon: "mdi:thermometer-lines"
+    min_value: 2000
+    max_value: 5000
+    step: 1
+    mode: box
+    update_interval: 1s
+    lambda: |-
+      return id(food_probe_b_constant);
+    set_action:
+      - lambda: |-
+          if (x < 2000) x = 2000;
+          if (x > 5000) x = 5000;
+          id(food_probe_b_constant) = x;
 
 # Text sensors
 text_sensor:
@@ -1767,6 +1938,14 @@ text_sensor:
 
 # Binary sensors
 binary_sensor:
+  # Food probe connected detection
+  - platform: template
+    id: ha_food_probe_connected
+    name: "Food Probe Connected"
+    icon: "mdi:thermometer-probe"
+    lambda: |-
+      return !std::isnan(id(current_food_temp));
+
   # Active element flags (what's in the running program) — for draft-change detection
   - platform: template
     id: ha_active_top_element
@@ -1958,7 +2137,12 @@ script:
               // Fan-only or no heating: skip straight to cooking
               id(timer_state) = id(timer_delay_remaining) > 0 ? 1 : 4;
             } else {
-              id(timer_state) = id(timer_delay_remaining) > 0 ? 1 : 2;
+              if (id(timer_delay_remaining) > 0) {
+                id(timer_state) = 1;
+              } else {
+                id(preheat_ramp_setpoint) = id(current_oven_temp);
+                id(timer_state) = 2;
+              }
             }
           } else {
             // RUNNING: update the active program
@@ -1982,7 +2166,12 @@ script:
                 id(timer_delay_remaining) = 0;
                 bool needs_preheat = id(active_temperature) > 0.0f &&
                   (id(active_top_element) || id(active_bottom_element) || id(active_grill_element));
-                id(timer_state) = needs_preheat ? 2 : 4;
+                if (needs_preheat) {
+                  id(preheat_ramp_setpoint) = id(current_oven_temp);
+                  id(timer_state) = 2;
+                } else {
+                  id(timer_state) = 4;
+                }
               } else {
                 id(timer_delay_remaining) = new_delay_remaining;
               }
@@ -1997,6 +2186,7 @@ script:
       - lambda: |-
           auto call = id(pid_climate).make_call();
           call.set_mode("OFF");
+          call.set_target_temperature(id(current_oven_temp));
           call.perform();
           id(pid_heat_was_active) = false;
           id(top_element_relay).turn_off();
@@ -2124,28 +2314,49 @@ interval:
             if (id(timer_delay_remaining) <= 0) {
               id(timer_delay_remaining) = 0;
               bool needs_preheat = target > 0.0f && heating_elements_selected;
-              id(timer_state) = needs_preheat ? 2 : 4;
+              if (needs_preheat) {
+                id(preheat_ramp_setpoint) = current_temp;
+                id(timer_state) = 2;
+              } else {
+                id(timer_state) = 4;
+              }
             }
           } else if (state == 2) {
-            // Preheating: wait until target temp reached
+            // Preheating: ramp PID setpoint from current temp toward target
             if (id(preheat_elapsed_seconds) < 2147483647) {
               id(preheat_elapsed_seconds)++;
             }
 
-            // Optional timeout to avoid being stuck forever in PREHEATING.
-            // Set preheat_timeout_minutes=0 to disable this behavior.
+            // Ramp the setpoint toward target at preheat_ramp_rate °C/min.
+            // Adaptive: only advance if the oven is within 5°C of the ramp setpoint.
+            // This prevents the setpoint from running ahead of reality, which would
+            // saturate the integral term and cause overshoot at the target.
+            float ramp_step = id(preheat_ramp_rate) / 60.0f;
+            float ramp_error = id(preheat_ramp_setpoint) - current_temp;
+            if (ramp_error < 5.0f) {
+              id(preheat_ramp_setpoint) += ramp_step;
+              if (id(preheat_ramp_setpoint) > target) {
+                id(preheat_ramp_setpoint) = target;
+              }
+            }
+
+            // Dynamic timeout: target / ramp_rate + 25% margin
+            // Prevents getting stuck if the oven can't keep up with the ramp.
             int timeout_sec = 0;
-            if (id(preheat_timeout_minutes) > 0.0f) {
-              timeout_sec = (int)(id(preheat_timeout_minutes) * 60.0f);
+            if (id(preheat_ramp_rate) > 0.0f) {
+              float ramp_minutes = target / id(preheat_ramp_rate);
+              timeout_sec = (int)(ramp_minutes * 60.0f * 1.25f);
             }
             if (timeout_sec > 0 && id(preheat_elapsed_seconds) >= timeout_sec) {
-              id(timer_state) = (id(working_start_delay) > 0.0f) ? 4 : 3;
+              id(pid_climate).reset_integral_term();
+              id(timer_state) = (id(cook_total_seconds) > 0) ? 3 : 4;
               id(buzzer_preheat_finished).execute();
             }
 
             if (target > 0.0f && heating_elements_selected) {
               if (current_temp >= target - 1.0f) {
-                id(timer_state) = (id(working_start_delay) > 0.0f) ? 4 : 3;
+                id(pid_climate).reset_integral_term();
+                id(timer_state) = (id(cook_total_seconds) > 0) ? 3 : 4;
                 id(buzzer_preheat_finished).execute();
               }
             }
@@ -2154,11 +2365,23 @@ interval:
             // PID and fan keep running (handled by allow_heat / allow_fan)
             // No countdown, no timeout — just hold
           } else if (state == 4) {
-            // Cooking: only decrement when timed; no-timer (remaining=0) runs until user cancels
-            if (id(timer_cook_remaining) > 0) {
-              id(timer_cook_remaining)--;
-              if (id(timer_cook_remaining) <= 0) {
-                id(timer_cook_remaining) = 0;
+            // Cooking: behavior depends on cook_mode
+            if (id(cook_mode) == 0) {
+              // Timer mode: decrement countdown, auto-stop at 0
+              if (id(timer_cook_remaining) > 0) {
+                id(timer_cook_remaining)--;
+                if (id(timer_cook_remaining) <= 0) {
+                  id(timer_cook_remaining) = 0;
+                  id(timer_state) = 0;
+                  id(cancel_program).execute();
+                  id(buzzer_cook_finished).execute();
+                }
+              }
+            } else if (id(cook_mode) == 1) {
+              // Probe mode: auto-stop when food reaches target
+              float food = id(current_food_temp);
+              float food_target = id(food_target_temperature);
+              if (food_target > 0.0f && !std::isnan(food) && food >= food_target) {
                 id(timer_state) = 0;
                 id(cancel_program).execute();
                 id(buzzer_cook_finished).execute();
@@ -2176,25 +2399,35 @@ interval:
             (target > 0.0f && any_heating_active) &&
             (id(timer_state) == 2 || id(timer_state) == 3 || id(timer_state) == 4);
 
+          // PID target: use ramp setpoint during preheating, final target otherwise
+          float pid_target = (id(timer_state) == 2) ? id(preheat_ramp_setpoint) : target;
+
           // PID gating: only update climate component on state transitions
           if (allow_heat && !id(pid_heat_was_active)) {
             auto call = id(pid_climate).make_call();
             call.set_mode("HEAT");
-            call.set_target_temperature(target);
+            call.set_target_temperature(pid_target);
             call.perform();
           } else if (allow_heat) {
-            if (id(pid_climate).target_temperature != target) {
+            if (id(pid_climate).target_temperature != pid_target) {
               auto call = id(pid_climate).make_call();
-              call.set_target_temperature(target);
+              call.set_target_temperature(pid_target);
               call.perform();
             }
           } else if (!allow_heat && id(pid_heat_was_active)) {
             auto call = id(pid_climate).make_call();
             call.set_mode("OFF");
+            call.set_target_temperature(current_temp);
             call.perform();
             id(top_element_relay).turn_off();
             id(bottom_element_relay).turn_off();
             id(grill_element_relay).turn_off();
+          } else if (!allow_heat) {
+            if (id(pid_climate).target_temperature != current_temp) {
+              auto call = id(pid_climate).make_call();
+              call.set_target_temperature(current_temp);
+              call.perform();
+            }
           }
           id(pid_heat_was_active) = allow_heat;
 
@@ -2363,6 +2596,15 @@ button:
     icon: "mdi:cancel"
     on_press:
       - script.execute: cancel_program
+
+  - platform: template
+    name: "Start Cooking"
+    icon: "mdi:pot-steam"
+    on_press:
+      - lambda: |-
+          if (id(timer_state) == 3) {
+            id(timer_state) = 4;
+          }
 
   - platform: template
     name: "PID Autotune"

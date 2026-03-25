@@ -12,6 +12,7 @@ Key features at a glance:
 - **Timer controls** — cook duration and start delay inputs.
 - **Element toggles** — independently control Top, Bottom, Grill, and Fan elements beyond the original 6-mode limitation.
 - **Program actions** — Apply Program (start/update) and Cancel Program buttons.
+- **Food probe support** — optional NTC 10K probe for food temperature monitoring with auto-stop when target reached. UI elements only appear when probe is connected.
 - **Device auto-discovery** — pass any entity from the oven device and the card discovers all others automatically.
 - **Zero external dependencies** — single vanilla-JS file.
 
@@ -87,6 +88,7 @@ entities:
   fan_selected: switch.libre_oven_fan_selected
   apply_program: button.libre_oven_apply_program
   cancel_program: button.libre_oven_cancel_program
+  start_cooking: button.libre_oven_start_cooking
   # Element visual-state sensors (0=off, 1=selected, 2=armed/active, 3=heating)
   top_element_state: sensor.libre_oven_top_element_state
   bottom_element_state: sensor.libre_oven_bottom_element_state
@@ -98,6 +100,11 @@ entities:
   active_bottom_element: binary_sensor.libre_oven_active_bottom_element
   active_grill_element: binary_sensor.libre_oven_active_grill_element
   active_fan_element: binary_sensor.libre_oven_active_fan_element
+  # Food probe (optional — only active when probe is physically connected)
+  food_probe_temperature: sensor.libre_oven_food_probe_temperature
+  food_probe_connected: binary_sensor.libre_oven_food_probe_connected
+  food_target_temperature: number.libre_oven_food_target_temperature
+  cook_mode: number.libre_oven_cook_mode
 ```
 
 If your device name differs from `libre_oven`, use `base_name: your_device_name` or update the entity IDs in the explicit config.
@@ -133,11 +140,11 @@ Four tiles in a 2×2 grid, each opening a bottom-sheet for editing:
 - **Timer tile**: Cook remaining countdown during COOKING, "Preheating"/"Oven ready" during those states, set cook total when WAITING. Shows the applied set value beneath.
 - **Start Delay tile**: Delay remaining countdown during WAITING, "Done" once delay has passed. Shows the applied set value beneath.
 - **Elements tile**: Active element summary (Top + Bottom + Grill + Fan).
-- **Temperature tile**: Current temperature and set temperature side by side.
+- **Temperature tile**: Current temperature, set temperature, and food probe temperature (when connected) side by side.
 
 Controls in the sheets:
 - **Temperature**: draggable arc thermostat with +/− 5°C buttons
-- **Cook duration**: +/−1 and +/−10 minute buttons with numeric input
+- **Cook duration**: +/−1 and +/−10 minute buttons with numeric input; cook mode toggle (Timer / Probe) and food target temperature when probe is connected
 - **Start delay**: +/−1 and +/−10 minute buttons with numeric input
 - **Element toggles**: Top, Bottom, Grill, Fan pill buttons
 
@@ -193,6 +200,16 @@ The card reads the `timer_state_code` sensor (numeric) for logic and the `timer_
 | `fan_selected`         | switch  | Fan toggle                      |
 | `apply_program`        | button  | Apply/start program             |
 | `cancel_program`       | button  | Cancel program                  |
+| `start_cooking`        | button  | Resume from READY to COOKING    |
+
+### Optional food probe entities (only active when NTC probe connected)
+
+| Entity Key                | Type          | Description                                    |
+|--------------------------|---------------|------------------------------------------------|
+| `food_probe_temperature` | sensor        | Current food probe temperature (NTC 10K)       |
+| `food_probe_connected`   | binary_sensor | Whether the food probe jack is plugged in       |
+| `food_target_temperature`| number        | Target food temperature for probe-mode auto-stop|
+| `cook_mode`              | number        | 0 = timer mode, 1 = probe mode                 |
 
 ### Optional state sensors (for visual element feedback)
 
