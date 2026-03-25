@@ -1086,6 +1086,7 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
   <!-- Timer Sheet (Cook Duration + Cook Mode) -->
   <div class="sheet" data-sheet="timer">
     <div class="sheet-handle"></div>
+    ${!s.foodProbeConnected || s.cookMode === 0 ? `
     <div class="sheet-title">Cook Duration</div>
     <div class="num-control">
       <div class="num-field" style="width:100%;justify-content:center">
@@ -1098,6 +1099,9 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
         <button class="num-btn num-btn-wide" data-action="duration-up-10">+10</button>
       </div>
     </div>
+    ` : `
+    <div class="sheet-title">Food Probe</div>
+    `}
     ${s.foodProbeConnected ? `
     <div class="sheet-sec" style="margin-top:16px">Cook Mode</div>
     <div class="pill-row">

@@ -1337,7 +1337,7 @@ sensor:
         - lambda: |-
             // Steinhart-Hart simplified (B-parameter): T = 1 / (1/T0 + (1/B)*ln(R/R0))
             float R = x;
-            if (std::isnan(R) || R < 1.0f || R > 1000000.0f) {
+            if (std::isnan(R) || R < 1.0f || R > 150000.0f) {
               id(current_food_temp) = NAN;
               id(food_probe_temperature).publish_state(NAN);
               return;
