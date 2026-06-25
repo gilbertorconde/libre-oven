@@ -66,6 +66,7 @@ const ENTITY_TEMPLATES = {
   food_probe_connected: 'binary_sensor.{base}_food_probe_connected',
   food_target_temperature: 'number.{base}_food_target_temperature',
   cook_mode: 'number.{base}_cook_mode',
+  kids_lock: 'switch.{base}_kids_lock',
 };
 
 // ── SVG arc helpers (from AC card) ───────────────────────────────────────────
@@ -444,6 +445,7 @@ class LibreOvenCard extends HTMLElement {
       foodProbeConnected: gs(e.food_probe_connected, 'off') === 'on',
       foodTarget: n(gs(e.food_target_temperature, '0'), 0),
       cookMode: this._optimisticCookMode !== null ? this._optimisticCookMode : n(gs(e.cook_mode, '0'), 0),
+      kidsLock: gs(e.kids_lock, 'off') === 'on',
     };
   }
 
@@ -495,6 +497,17 @@ class LibreOvenCard extends HTMLElement {
   border-radius: 50%;
   background: var(--mode-color);
 }
+.header-right { display: flex; align-items: center; gap: 8px; }
+.lock-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 50%;
+  border: none; background: none; cursor: pointer; padding: 0;
+  color: var(--secondary-text-color);
+  transition: color .15s, background .15s;
+}
+.lock-btn:hover { background: rgba(255,255,255,.06); }
+.lock-btn svg { fill: currentColor; }
+.lock-btn.locked { color: #e5c000; }
 
 /* ── Oven SVG section ── */
 .oven-section {
@@ -1015,7 +1028,16 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
   <!-- Header -->
   <div class="header">
     <span class="name">${this._config.title || 'Libre Oven'}</span>
-    <span class="chip"><span class="chip-dot"></span>${s.stateLabel}</span>
+    <div class="header-right">
+      ${e.kids_lock ? `<button class="lock-btn${s.kidsLock ? ' locked' : ''}" data-action="toggle-kids-lock"
+          title="${s.kidsLock ? 'Child lock on - tap to unlock' : 'Child lock off - tap to lock'}"
+          aria-label="Toggle child lock">
+        <svg viewBox="0 0 24 24" width="18" height="18">${s.kidsLock
+          ? '<path d="M12 17a2 2 0 0 0 2-2 2 2 0 0 0-2-2 2 2 0 0 0-2 2 2 2 0 0 0 2 2m6-9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h1V6a5 5 0 0 1 5-5 5 5 0 0 1 5 5v2zm-6-5a3 3 0 0 0-3 3v2h6V6a3 3 0 0 0-3-3z"/>'
+          : '<path d="M12 17a2 2 0 0 0 2-2 2 2 0 0 0-2-2 2 2 0 0 0-2 2 2 2 0 0 0 2 2m6-9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h9V6a3 3 0 0 0-6 0H7a5 5 0 0 1 10 0v2z"/>'}</svg>
+      </button>` : ''}
+      <span class="chip"><span class="chip-dot"></span>${s.stateLabel}</span>
+    </div>
   </div>
 
   <!-- Oven SVG -->
@@ -1341,6 +1363,11 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
     const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
     switch (action) {
+      // Kids lock toggle (card stays usable while locked)
+      case 'toggle-kids-lock':
+        if (ent.kids_lock) this._call('switch', 'toggle', { entity_id: ent.kids_lock });
+        return;
+
       // Navigation
       case 'open-timer':       this._openSheet('timer');       return;
       case 'open-delay':       this._openSheet('delay');       return;
