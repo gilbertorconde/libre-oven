@@ -4,7 +4,7 @@ This folder contains the ESPHome configuration for the Libre Oven Controller usi
 
 The firmware implements:
 
-- A **multi-page UI** on a 2.4" ILI9341 TFT.
+- A **multi-page UI** on a 2.4" ST7789V TFT.
 - 3x rotary encoders with push buttons (Timer, Temperature, Mode).
 - **PID temperature control** with slow PWM output for SSR-driven heating.
 - Full **timer + preheat + ready + cook** state machine with resume-after-power-loss.

@@ -96,7 +96,7 @@ status_led:
 # Display Configuration
 #####################################
 #
-# ILI9341 TFT Display - SPI
+# ST7789V TFT Display - SPI (240x320 panel, landscape UI via rotation)
 #   SCK:  GPIO14 (HSPI SCK)
 #   MOSI: GPIO13 (HSPI MOSI)
 #   CS:   GPIO15
@@ -210,7 +210,7 @@ climate:
       ki_multiplier: 0.05
       deadband_output_averaging_samples: 15
 
-# ILI9341 TFT Display
+# ST7789V TFT Display
 color:
   - id: background_color
     hex: FFFFFF
@@ -219,36 +219,22 @@ color:
   - id: off_element
     hex: e2e2e2
   - id: on_element
-    hex: e5c000
+    hex: 00c0e5
   - id: hot_element
-    hex: e01e00
+    hex: 001ee0
   - id: selected_element
     hex: 161616
 
 display:
-  # ILI9341 TFT via the 'ili9xxx' driver.
-  #
-  # We deliberately keep 'ili9xxx' (NOT the newer 'mipi_spi'). This panel is a
-  # 240x320-native ILI9341; 'ili9xxx' lets us declare the final landscape size
-  # (rotation: 0 + dimensions 320x240) and handles the axis-swap + GRAM
-  # addressing internally, which Just Works on this hardware. 'mipi_spi' instead
-  # takes 'dimensions' literally and requires 'rotation: 90'; on this panel /
-  # ESPHome version that produced garbage strip lines and sideways+repeating
-  # output (ESPHome issues #15787, #15794, #17065). 'ili9xxx' is only
-  # *deprecated* (a harmless compile warning) and renders correctly, so we use it.
-  - platform: ili9xxx
+  # ST7789V via mipi_spi. Panel is 240x320 native; UI is 320x240 landscape.
+  # rotation: 90 is upside-down on this mounting — use 270 instead.
+  - platform: mipi_spi
     id: oven_display
-    model: ili9341
+    model: ST7789V
     spi_id: spi_display
     cs_pin: GPIO15
     dc_pin: GPIO12
-    rotation: 0
-    color_palette: NONE
-    invert_colors: false
-    dimensions:
-      width: 320
-      height: 240
-    # 8 FPS is enough for this UI and reduces redraw load.
+    rotation: 270
     update_interval: 125ms
     auto_clear_enabled: true
 
@@ -1187,9 +1173,8 @@ globals:
     initial_value: "false"
 
   # Global UI draw offset (px), live-tunable from Home Assistant. Shifts every
-  # drawn element to re-center the mipi_spi ILI9341 window and stop edge
-  # clipping. restore_value keeps tuned values across reboots; once happy, bake
-  # the final numbers into initial_value here.
+  # drawn element for minor alignment tweaks. restore_value keeps tuned values
+  # across reboots; once happy, bake the final numbers into initial_value here.
   - id: ui_offset_x
     type: int
     restore_value: yes
