@@ -13,6 +13,8 @@ The firmware implements:
 - **Fan-only mode**: fan can run without a temperature target or heating elements.
 - Visual oven mimic, element status, Wi-Fi and light indicators.
 - Optional **LED indicators** for elements and **buzzer** alerts.
+- Optional **food probe** (NTC 100K) with timer/probe cook modes and auto-stop at target.
+- **Child lock**: disable the physical knobs by holding Mode + Temperature; Home Assistant stays fully usable.
 - **Home Assistant integration** via ESPHome API with PID tuning sensors and autotune button.
 
 ---
@@ -123,6 +125,11 @@ The UI uses multiple pages controlled by the encoder buttons:
 
 - **Page 5 -- Cancel Confirmation**
   - Confirms canceling the current program.
+
+- **Page 6 -- Child Lock Popup**
+  - Shown when a knob is used while the child lock is active (`LOCKED` + unlock hint), or briefly as `UNLOCKED` feedback after unlocking.
+  - Auto-dismisses back to the main screen ~5 s after the last knob touch.
+  - See [Child Lock](#child-lock).
 
 ### Encoder Step Patterns
 
@@ -284,6 +291,92 @@ This ensures the internal cooling fan keeps running after a program ends until t
 
 ---
 
+## Food Probe (optional)
+
+An optional NTC thermistor meat probe (2.5 mm jack) enables food-temperature monitoring and probe-based auto-stop.
+
+### Hardware & wiring
+
+- Voltage divider on **GPIO7**: `3.3V → 10K fixed resistor → GPIO7 → NTC probe → GND`.
+- The fixed divider resistor is **10K** (on the PCB); the probe nominal is **100K NTC @ 25 °C**.
+- The ADC reads the divider voltage; a `resistance` sensor back-calculates the probe resistance.
+
+### Temperature conversion
+
+Resistance is converted to temperature with the simplified Steinhart-Hart (B-parameter) equation:
+
+```
+T = 1 / (1/T0 + (1/B) * ln(R/R0))
+```
+
+- `R0 = food_probe_r0` — probe nominal at 25 °C, default **100000** Ω, adjustable from Home Assistant (`Food Probe R0 (25C)`).
+- `T0 = 298.15` K (25 °C)
+- `B = food_probe_b_constant` — default **3950** (typical for 100K meat probes), adjustable from Home Assistant (`Food Probe B-Constant`).
+
+> Using a different probe? A **10K** probe needs `R0 = 10000` and usually `B ≈ 3435`. As a sanity check, a 100K NTC reads ~100 kΩ at 25 °C (~330 kΩ in ice water, ~7 kΩ in boiling water); a 10K NTC reads ~10 kΩ at 25 °C.
+
+### Calibration
+
+Both `R0` and `B` are live-tunable from Home Assistant, and two **debug** sensors publish the ungated raw readings (`Food Probe Resistance (Debug)` and `Food Probe Temperature (Debug)`) so you can dial them in even when the probe reads as "disconnected":
+
+- **Single-point (recommended):** hold the probe at a known 25 °C, read `Food Probe Resistance (Debug)`, and set `Food Probe R0 (25C)` to that value. The reading at 25 °C will then be exact.
+- **Slope:** if the error grows away from 25 °C, adjust `B` to match the probe datasheet.
+
+### Probe detection
+
+There is no dedicated detect pin — detection is "did we get a believable reading":
+
+- If the computed resistance is out of range (`< 1 Ω` or `> 160 kΩ`) **or** the resulting temperature is outside `-10…300 °C`, `current_food_temp` is set to `NaN`.
+- With the 10K fixed divider, an **unplugged** 100K probe floats the node high and computes to ~300 kΩ+ (~1-2 °C). A connected probe at usable temperatures stays well under 160 kΩ (~100-130 kΩ at room temp, far less when hot), so the `> 160 kΩ` cutoff distinguishes "disconnected" from "in use". (Trade-off: food colder than ~16 °C is treated as no-probe. A proper fix is a ~100K fixed divider resistor in hardware.)
+- `Food Probe Connected` (binary sensor) is simply `!isnan(current_food_temp)`, and the UI only shows probe info when a valid reading exists. The debug sensors are **not** gated and keep publishing regardless.
+
+### Cook modes
+
+The cook mode is **selected automatically from probe presence** — there is no manual toggle:
+
+- **Timer mode** (`cook_mode = 0`): active whenever no probe is connected. Cooking counts down the duration and auto-stops at 0. Behaves exactly as before.
+- **Probe mode** (`cook_mode = 1`): active whenever a probe is connected. Cooking ignores the duration and auto-stops (with the finish buzzer) when the food reaches `food_target_temperature`.
+
+The mode is derived every second while the oven is idle and then **latched** when a program starts, so unplugging the probe mid-cook cannot switch modes underneath a running program. In Home Assistant, `Cook Mode` is now read-only and just reflects the current mode; `Food Target Temperature` stays editable.
+
+### Setting the food target from the knobs
+
+In probe mode the **Timer knob and Timer screen are repurposed to set the food target temperature** instead of a cook duration (time is irrelevant when cooking to core temperature):
+
+- On the Timer screen the first field shows **FOOD TARGET** (in °C) instead of DURATION. Rotate any knob to adjust it: Timer knob ±1 °C, Mode knob ±5 °C, Temperature knob ±10 °C (clamped 0–300 °C).
+- The **delayed-start** field (second phase, toggled with the Timer button) still works in probe mode.
+
+Typical probe workflow:
+
+1. Plug the probe cable into the oven jack (this enables probe mode).
+2. Set the oven **temperature** (Temperature knob), **elements** (Mode knob), and **food target** (Timer knob).
+3. Start the program (Timer button → confirm). The oven **preheats**, then holds at **OVEN READY**.
+4. Put the food in, insert the probe tip, and **press any knob** to begin cooking.
+5. The program stops automatically (with the buzzer) once the food reaches the target.
+
+---
+
+## Child Lock
+
+A child/kids lock disables the **physical knobs** while leaving Home Assistant fully functional.
+
+### Gesture
+
+- **Toggle**: press and hold both the **Mode** and **Temperature** knob buttons together for **5 seconds** (a buzzer confirms). The same gesture locks and unlocks.
+- Detection runs in a dedicated 250 ms interval reading the button states directly, so it works even while locked.
+
+### Behaviour when locked
+
+- Rotating or pressing any knob performs no action; instead the screen wakes and shows the **child lock popup** (page 6), which auto-dismisses ~5 s after the last interaction (like other transient screens).
+- Home Assistant controls (numbers, switches, buttons, the custom card) keep working normally — only the knobs are gated.
+- The lock state is stored (`restore_value: yes`) and **persists across reboots/power loss**.
+
+### Home Assistant
+
+- Exposed as the **`Kids Lock`** switch (`switch.<device>_kids_lock`). It two-way syncs: toggling the switch locks/unlocks the device, and the knob gesture updates the switch state.
+
+---
+
 ## Logging Configuration
 
 The logger is configured to minimize noise while keeping PID autotune output visible:
@@ -313,12 +406,15 @@ The following entities are exposed to Home Assistant:
 - Cook Remaining (HH:MM:SS countdown for cook duration)
 - Active Cook Total (minutes, what was applied)
 - Active Delay Total (minutes, what was applied)
+- Food Probe Temperature (NTC 100K; only valid when a probe is connected)
+- Food Probe Temperature (Debug) and Food Probe Resistance (Debug) — ungated raw readings for calibration (diagnostic)
 
 ### Binary sensors
 - Active Top/Bottom/Grill/Fan Element — whether each element is in the running program (for draft-change detection)
 - Top/Bottom/Grill Element State (0=off, 1=selected, 2=armed, 3=heating)
 - Fan Element State (0=off, 1=selected, 2=active)
 - Oven Frame State (0=off, 1=selected, 2=active)
+- Food Probe Connected (binary: probe jack plugged in)
 - System ON (binary: any SSR active or program running)
 - PID Heat Output, Proportional, Integral, Derivative, Error, Kp, Ki, Kd
 
@@ -326,7 +422,12 @@ The following entities are exposed to Home Assistant:
 - Set Temperature (number, 0-280 °C)
 - Cook Duration (number, minutes)
 - Start Delay (number, minutes)
+- Food Target Temperature (number, °C — probe-mode auto-stop target)
+- Cook Mode (number, read-only, 0 = timer / 1 = probe — auto-selected from probe presence)
+- Food Probe B-Constant (number — tune to match your probe; default 3950)
+- Food Probe R0 (25C) (number — probe nominal resistance for single-point calibration; default 100000)
 - Top/Bottom/Grill/Fan Element Selected (switches)
+- Kids Lock (switch — locks the physical knobs; HA stays usable)
 - Apply Program (button)
 - Cancel Program (button)
 - PID Autotune (button)

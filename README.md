@@ -12,7 +12,8 @@ Key features at a glance:
 - **Timer controls** — cook duration and start delay inputs.
 - **Element toggles** — independently control Top, Bottom, Grill, and Fan elements beyond the original 6-mode limitation.
 - **Program actions** — Apply Program (start/update) and Cancel Program buttons.
-- **Food probe support** — optional NTC 10K probe for food temperature monitoring with auto-stop when target reached. UI elements only appear when probe is connected.
+- **Food probe support** — optional NTC 100K probe for food temperature monitoring with auto-stop when target reached. UI elements only appear when probe is connected.
+- **Child lock** — lock/unlock the oven's physical knobs from the card; a padlock toggle in the header reflects the current state (also settable on the device by holding the Mode + Temperature knobs).
 - **Device auto-discovery** — pass any entity from the oven device and the card discovers all others automatically.
 - **Zero external dependencies** — single vanilla-JS file.
 
@@ -105,6 +106,8 @@ entities:
   food_probe_connected: binary_sensor.libre_oven_food_probe_connected
   food_target_temperature: number.libre_oven_food_target_temperature
   cook_mode: number.libre_oven_cook_mode
+  # Child lock (optional)
+  kids_lock: switch.libre_oven_kids_lock
 ```
 
 If your device name differs from `libre_oven`, use `base_name: your_device_name` or update the entity IDs in the explicit config.
@@ -119,6 +122,7 @@ The card is divided into three sections:
 
 Mirrors the physical oven display:
 
+- **Child lock toggle** (header, left of the state label): a padlock icon — muted/open when unlocked, amber/closed when locked. Tap to lock or unlock the physical knobs. Only shown when the `kids_lock` entity is available.
 - **State label** with color coding:
   - Idle: white
   - Waiting: yellow (#e5c000)
@@ -206,10 +210,16 @@ The card reads the `timer_state_code` sensor (numeric) for logic and the `timer_
 
 | Entity Key                | Type          | Description                                    |
 |--------------------------|---------------|------------------------------------------------|
-| `food_probe_temperature` | sensor        | Current food probe temperature (NTC 10K)       |
+| `food_probe_temperature` | sensor        | Current food probe temperature (NTC 100K)      |
 | `food_probe_connected`   | binary_sensor | Whether the food probe jack is plugged in       |
 | `food_target_temperature`| number        | Target food temperature for probe-mode auto-stop|
 | `cook_mode`              | number        | 0 = timer mode, 1 = probe mode                 |
+
+### Optional child lock entity
+
+| Entity Key  | Type   | Description                                          |
+|-------------|--------|------------------------------------------------------|
+| `kids_lock` | switch | Locks/unlocks the oven's physical knobs (HA stays usable) |
 
 ### Optional state sensors (for visual element feedback)
 

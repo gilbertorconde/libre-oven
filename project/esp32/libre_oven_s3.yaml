@@ -226,27 +226,51 @@ color:
     hex: 161616
 
 display:
-  # Migrated from the deprecated 'ili9xxx' platform to 'mipi_spi'.
-  - platform: mipi_spi
+  # ILI9341 TFT via the 'ili9xxx' driver.
+  #
+  # We deliberately keep 'ili9xxx' (NOT the newer 'mipi_spi'). This panel is a
+  # 240x320-native ILI9341; 'ili9xxx' lets us declare the final landscape size
+  # (rotation: 0 + dimensions 320x240) and handles the axis-swap + GRAM
+  # addressing internally, which Just Works on this hardware. 'mipi_spi' instead
+  # takes 'dimensions' literally and requires 'rotation: 90'; on this panel /
+  # ESPHome version that produced garbage strip lines and sideways+repeating
+  # output (ESPHome issues #15787, #15794, #17065). 'ili9xxx' is only
+  # *deprecated* (a harmless compile warning) and renders correctly, so we use it.
+  - platform: ili9xxx
     id: oven_display
-    model: ILI9341
+    model: ili9341
+    spi_id: spi_display
     cs_pin: GPIO15
     dc_pin: GPIO12
-    spi_id: spi_display
-    # ILI9341 is natively portrait (240x320). rotation 90 gives the 320x240
-    # landscape the UI is laid out for. If the image is upside down/mirrored,
-    # switch this to 270.
-    rotation: 90
+    rotation: 0
+    color_palette: NONE
     invert_colors: false
-    # Works around scrambled/extra-line artifacts on ILI9341 under mipi_spi.
-    draw_rounding: 1
+    dimensions:
+      width: 320
+      height: 240
     # 8 FPS is enough for this UI and reduces redraw load.
     update_interval: 125ms
     auto_clear_enabled: true
 
     lambda: |-
-      // Clear entire screen to black first
+      // Clear entire screen to black first (full physical frame, NOT offset, so
+      // shifting the UI never leaves stale/garbage pixels at the edges).
       it.filled_rectangle(0, 0, it.get_width(), it.get_height(), id(background_color));
+
+      // ── Global UI offset wrappers ─────────────────────────────────
+      // Every draw call below goes through these so the whole UI can be
+      // nudged by (ui_offset_x, ui_offset_y) to fine-tune centering / fix any
+      // edge clipping. Tune via the HA "UI Offset X/Y" sliders, then bake the
+      // values into the ui_offset_x/ui_offset_y globals.
+      const int OX = id(ui_offset_x);
+      const int OY = id(ui_offset_y);
+      auto P  = [&](int x, int y, auto&&... a) { it.print(x + OX, y + OY, a...); };
+      auto PF = [&](int x, int y, auto&&... a) { it.printf(x + OX, y + OY, a...); };
+      auto LN = [&](int x1, int y1, int x2, int y2, auto&&... a) { it.line(x1 + OX, y1 + OY, x2 + OX, y2 + OY, a...); };
+      auto FR = [&](int x, int y, int w, int h, auto&&... a) { it.filled_rectangle(x + OX, y + OY, w, h, a...); };
+      auto RC = [&](int x, int y, int w, int h, auto&&... a) { it.rectangle(x + OX, y + OY, w, h, a...); };
+      auto FC = [&](int x, int y, auto&&... a) { it.filled_circle(x + OX, y + OY, a...); };
+      auto PX = [&](int x, int y, auto&&... a) { it.draw_pixel_at(x + OX, y + OY, a...); };
 
       // When sleeping, keep a blank frame and skip all heavy drawing.
       // This keeps runtime logic independent and avoids UI burn patterns.
@@ -260,13 +284,13 @@ display:
       if (millis() < 12000) {
         int cx = it.get_width() / 2;
         int cy = it.get_height() / 2;
-        it.print(cx, cy - 20, id(font_normal), id(text_color),
+        P(cx, cy - 20, id(font_normal), id(text_color),
                  TextAlign::CENTER, "Starting up...");
 
         // Animated dots: cycle 1-3 dots every ~500ms
         int dots = ((millis() / 500) % 3) + 1;
         const char *dot_str = dots == 1 ? "." : (dots == 2 ? ".." : "...");
-        it.print(cx, cy + 15, id(font_normal), id(off_element),
+        P(cx, cy + 15, id(font_normal), id(off_element),
                  TextAlign::CENTER, dot_str);
         return;
       }
@@ -387,21 +411,21 @@ display:
 
       // Draw oven_color rounded rectangle (4px stroke)
       // Straight edges
-      it.line(oven_x + corner_r, oven_y, oven_x + oven_w - corner_r, oven_y, oven_color);
-      it.line(oven_x + corner_r, oven_y + 1, oven_x + oven_w - corner_r, oven_y + 1, oven_color);
-      it.line(oven_x + corner_r, oven_y + 2, oven_x + oven_w - corner_r, oven_y + 2, oven_color);
+      LN(oven_x + corner_r, oven_y, oven_x + oven_w - corner_r, oven_y, oven_color);
+      LN(oven_x + corner_r, oven_y + 1, oven_x + oven_w - corner_r, oven_y + 1, oven_color);
+      LN(oven_x + corner_r, oven_y + 2, oven_x + oven_w - corner_r, oven_y + 2, oven_color);
 
-      it.line(oven_x + corner_r, oven_y + oven_h, oven_x + oven_w - corner_r, oven_y + oven_h, oven_color);
-      it.line(oven_x + corner_r, oven_y + oven_h - 1, oven_x + oven_w - corner_r, oven_y + oven_h - 1, oven_color);
-      it.line(oven_x + corner_r, oven_y + oven_h - 2, oven_x + oven_w - corner_r, oven_y + oven_h - 2, oven_color);
+      LN(oven_x + corner_r, oven_y + oven_h, oven_x + oven_w - corner_r, oven_y + oven_h, oven_color);
+      LN(oven_x + corner_r, oven_y + oven_h - 1, oven_x + oven_w - corner_r, oven_y + oven_h - 1, oven_color);
+      LN(oven_x + corner_r, oven_y + oven_h - 2, oven_x + oven_w - corner_r, oven_y + oven_h - 2, oven_color);
 
-      it.line(oven_x, oven_y + corner_r, oven_x, oven_y + oven_h - corner_r, oven_color);
-      it.line(oven_x + 1, oven_y + corner_r, oven_x + 1, oven_y + oven_h - corner_r, oven_color);
-      it.line(oven_x + 2, oven_y + corner_r, oven_x + 2, oven_y + oven_h - corner_r, oven_color);
+      LN(oven_x, oven_y + corner_r, oven_x, oven_y + oven_h - corner_r, oven_color);
+      LN(oven_x + 1, oven_y + corner_r, oven_x + 1, oven_y + oven_h - corner_r, oven_color);
+      LN(oven_x + 2, oven_y + corner_r, oven_x + 2, oven_y + oven_h - corner_r, oven_color);
 
-      it.line(oven_x + oven_w, oven_y + corner_r, oven_x + oven_w, oven_y + oven_h - corner_r, oven_color);
-      it.line(oven_x + oven_w - 1, oven_y + corner_r, oven_x + oven_w - 1, oven_y + oven_h - corner_r, oven_color);
-      it.line(oven_x + oven_w - 2, oven_y + corner_r, oven_x + oven_w - 2, oven_y + oven_h - corner_r, oven_color);
+      LN(oven_x + oven_w, oven_y + corner_r, oven_x + oven_w, oven_y + oven_h - corner_r, oven_color);
+      LN(oven_x + oven_w - 1, oven_y + corner_r, oven_x + oven_w - 1, oven_y + oven_h - corner_r, oven_color);
+      LN(oven_x + oven_w - 2, oven_y + corner_r, oven_x + oven_w - 2, oven_y + oven_h - corner_r, oven_color);
 
       // Rounded corners - draw only the arc quadrants using angles
       for (int r = corner_r - 2; r <= corner_r; r++) {
@@ -409,25 +433,25 @@ display:
         for (int angle = 180; angle <= 270; angle += 2) {
           int x = oven_x + corner_r + (int)(r * cos(angle * 3.14159 / 180));
           int y = oven_y + corner_r + (int)(r * sin(angle * 3.14159 / 180));
-          it.draw_pixel_at(x, y, oven_color);
+          PX(x, y, oven_color);
         }
         // Top-right corner: 270° to 360°
         for (int angle = 270; angle <= 360; angle += 2) {
           int x = oven_x + oven_w - corner_r + (int)(r * cos(angle * 3.14159 / 180));
           int y = oven_y + corner_r + (int)(r * sin(angle * 3.14159 / 180));
-          it.draw_pixel_at(x, y, oven_color);
+          PX(x, y, oven_color);
         }
         // Bottom-left corner: 90° to 180°
         for (int angle = 90; angle <= 180; angle += 2) {
           int x = oven_x + corner_r + (int)(r * cos(angle * 3.14159 / 180));
           int y = oven_y + oven_h - corner_r + (int)(r * sin(angle * 3.14159 / 180));
-          it.draw_pixel_at(x, y, oven_color);
+          PX(x, y, oven_color);
         }
         // Bottom-right corner: 0° to 90°
         for (int angle = 0; angle <= 90; angle += 2) {
           int x = oven_x + oven_w - corner_r + (int)(r * cos(angle * 3.14159 / 180));
           int y = oven_y + oven_h - corner_r + (int)(r * sin(angle * 3.14159 / 180));
-          it.draw_pixel_at(x, y, oven_color);
+          PX(x, y, oven_color);
         }
       }
 
@@ -436,11 +460,11 @@ display:
       // Color: yellow when ON, red when heating, gray when OFF
       // ═══════════════════════════════════════════════════════════
       for (int i = 0; i < 5; i++) {
-        it.line(151 + oven_x_offset, 86 + i + oven_y_offset, 277 + oven_x_offset, 86 + i + oven_y_offset, top_color);
+        LN(151 + oven_x_offset, 86 + i + oven_y_offset, 277 + oven_x_offset, 86 + i + oven_y_offset, top_color);
       }
       // Rounded caps at both ends
-      it.filled_circle(151 + oven_x_offset, 88 + oven_y_offset, 2, top_color);  // Left cap
-      it.filled_circle(277 + oven_x_offset, 88 + oven_y_offset, 2, top_color);  // Right cap
+      FC(151 + oven_x_offset, 88 + oven_y_offset, 2, top_color);  // Left cap
+      FC(277 + oven_x_offset, 88 + oven_y_offset, 2, top_color);  // Right cap
 
       // ═══════════════════════════════════════════════════════════
       // GRILL ZIGZAG PATTERN (gray, 6px stroke)
@@ -453,8 +477,8 @@ display:
         int x_base = zigzag_start_x + (i * 16);
         // Each zigzag: up 8px right, down 14px, down 8px right
         for (int t = 0; t < 3; t++) {  // 3px thick lines
-          it.line(x_base + t, zigzag_y, x_base + 8 + t, zigzag_y + 14, grill_color);
-          it.line(x_base + 8 + t, zigzag_y + 14, x_base + 16 + t, zigzag_y, grill_color);
+          LN(x_base + t, zigzag_y, x_base + 8 + t, zigzag_y + 14, grill_color);
+          LN(x_base + 8 + t, zigzag_y + 14, x_base + 16 + t, zigzag_y, grill_color);
         }
       }
 
@@ -466,7 +490,7 @@ display:
       int fan_y = 155 + oven_y_offset;  // Centered vertically in oven
 
       // Fill fan circle with appropriate color (yellow when ON, gray when OFF)
-      it.filled_circle(fan_x, fan_y, 37, fan_color);
+      FC(fan_x, fan_y, 37, fan_color);
 
       // Animate fan blades only when fan SSR is ON
       static int fan_angle = 0;
@@ -499,30 +523,30 @@ display:
       for (float t = 0; t <= 1.0; t += 0.05) {
         int x = x1_start + (int)((x1_end - x1_start) * t);
         int y = y1_start + (int)((y1_end - y1_start) * t);
-        it.filled_circle(x, y, 4, id(background_color));  // radius 4 = 8px diameter
+        FC(x, y, 4, id(background_color));  // radius 4 = 8px diameter
       }
 
       // Blade 2: draw circles along the line from start to end
       for (float t = 0; t <= 1.0; t += 0.05) {
         int x = x2_start + (int)((x2_end - x2_start) * t);
         int y = y2_start + (int)((y2_end - y2_start) * t);
-        it.filled_circle(x, y, 4, id(background_color));  // radius 4 = 8px diameter
+        FC(x, y, 4, id(background_color));  // radius 4 = 8px diameter
       }
 
       // Background-colored center circle (motor hub)
-      it.filled_circle(fan_x, fan_y, 14, id(background_color));
-      it.filled_circle(fan_x, fan_y, 8, fan_color);
+      FC(fan_x, fan_y, 14, id(background_color));
+      FC(fan_x, fan_y, 8, fan_color);
 
       // ═══════════════════════════════════════════════════════════
       // BOTTOM HEATING ELEMENT (6px thick with rounded caps)
       // Color: yellow when ON, red when heating, gray when OFF
       // ═══════════════════════════════════════════════════════════
       for (int i = 0; i < 5; i++) {
-        it.line(151 + oven_x_offset, 204 + i + oven_y_offset, 277 + oven_x_offset, 204 + i + oven_y_offset, bottom_color);
+        LN(151 + oven_x_offset, 204 + i + oven_y_offset, 277 + oven_x_offset, 204 + i + oven_y_offset, bottom_color);
       }
       // Rounded caps at both ends
-      it.filled_circle(151 + oven_x_offset, 206 + oven_y_offset, 2, bottom_color);  // Left cap
-      it.filled_circle(277 + oven_x_offset, 206 + oven_y_offset, 2, bottom_color);  // Right cap
+      FC(151 + oven_x_offset, 206 + oven_y_offset, 2, bottom_color);  // Left cap
+      FC(277 + oven_x_offset, 206 + oven_y_offset, 2, bottom_color);  // Right cap
 
       // ═══════════════════════════════════════════════════════════
       // TEXT ELEMENTS (exact SVG coordinates)
@@ -547,16 +571,16 @@ display:
 
       // Bulb glass (circle)
       for (int r = 6; r <= 8; r++) {
-        it.filled_circle(bulb_x, bulb_y, r, bulb_color);
+        FC(bulb_x, bulb_y, r, bulb_color);
       }
 
       // Bulb base/socket (small rectangle)
       for (int i = 0; i < 3; i++) {
-        it.line(bulb_x - 3, bulb_y + 9 + i, bulb_x + 3, bulb_y + 9 + i, bulb_color);
+        LN(bulb_x - 3, bulb_y + 9 + i, bulb_x + 3, bulb_y + 9 + i, bulb_color);
       }
 
       // Bulb contact point (bottom line)
-      it.line(bulb_x - 2, bulb_y + 13, bulb_x + 2, bulb_y + 13, bulb_color);
+      LN(bulb_x - 2, bulb_y + 13, bulb_x + 2, bulb_y + 13, bulb_color);
 
       // ═══════════════════════════════════════════════════════════
       // Play/Pause Status Icon - left of light bulb
@@ -570,12 +594,12 @@ display:
         // Play triangle (pointing right, ~18x22px to match bulb height)
         for (int dx = 0; dx <= 18; dx++) {
           int half_h = 11 - (11 * dx / 18);
-          it.line(icon_x + dx, icon_y - half_h, icon_x + dx, icon_y + half_h, icon_color);
+          LN(icon_x + dx, icon_y - half_h, icon_x + dx, icon_y + half_h, icon_color);
         }
       } else {
         // Pause icon (two vertical bars, 5px wide each, 22px tall)
-        it.filled_rectangle(icon_x, icon_y - 11, 5, 22, icon_color);
-        it.filled_rectangle(icon_x + 9, icon_y - 11, 5, 22, icon_color);
+        FR(icon_x, icon_y - 11, 5, 22, icon_color);
+        FR(icon_x + 9, icon_y - 11, 5, 22, icon_color);
       }
 
       // ═══════════════════════════════════════════════════════════
@@ -589,7 +613,7 @@ display:
         int wifi_center_y = wifi_y + 18;  // Bottom center point
         
         // Draw dot at bottom center
-        it.filled_circle(wifi_x, wifi_center_y, 2, id(text_color));
+        FC(wifi_x, wifi_center_y, 2, id(text_color));
         
         // Draw 3 concentric arcs using angle-based drawing (pointing upward)
         // Small arc (innermost)
@@ -598,7 +622,7 @@ display:
           for (int r = 6; r <= 8; r++) {
             int x = wifi_x + (int)(r * cos(rad));
             int y = wifi_center_y - (int)(r * sin(rad));
-            it.draw_pixel_at(x, y, id(text_color));
+            PX(x, y, id(text_color));
           }
         }
         
@@ -608,7 +632,7 @@ display:
           for (int r = 11; r <= 13; r++) {
             int x = wifi_x + (int)(r * cos(rad));
             int y = wifi_center_y - (int)(r * sin(rad));
-            it.draw_pixel_at(x, y, id(text_color));
+            PX(x, y, id(text_color));
           }
         }
         
@@ -618,48 +642,48 @@ display:
           for (int r = 16; r <= 18; r++) {
             int x = wifi_x + (int)(r * cos(rad));
             int y = wifi_center_y - (int)(r * sin(rad));
-            it.draw_pixel_at(x, y, id(text_color));
+            PX(x, y, id(text_color));
           }
         }
       } else if (wifi::global_wifi_component->has_ap()) {
         // AP Mode - Circle with 4 radiating dots (broadcasting)
-        it.filled_circle(wifi_x, wifi_y + 8, 5, id(on_element));              // Center circle
-        it.filled_circle(wifi_x - 12, wifi_y + 8, 2, id(on_element));         // Left dot
-        it.filled_circle(wifi_x + 12, wifi_y + 8, 2, id(on_element));         // Right dot
-        it.filled_circle(wifi_x, wifi_y - 4, 2, id(on_element));              // Top dot
-        it.filled_circle(wifi_x, wifi_y + 20, 2, id(on_element));             // Bottom dot
+        FC(wifi_x, wifi_y + 8, 5, id(on_element));              // Center circle
+        FC(wifi_x - 12, wifi_y + 8, 2, id(on_element));         // Left dot
+        FC(wifi_x + 12, wifi_y + 8, 2, id(on_element));         // Right dot
+        FC(wifi_x, wifi_y - 4, 2, id(on_element));              // Top dot
+        FC(wifi_x, wifi_y + 20, 2, id(on_element));             // Bottom dot
       } else {
         // Disconnected - X symbol
         // Draw thick X with multiple lines
         for (int i = 0; i < 3; i++) {
-          it.line(wifi_x - 10, wifi_y + i, wifi_x + 10, wifi_y + 16 + i, id(hot_element));      // Top-left to bottom-right
-          it.line(wifi_x - 10, wifi_y + 16 + i, wifi_x + 10, wifi_y + i, id(hot_element));      // Bottom-left to top-right
+          LN(wifi_x - 10, wifi_y + i, wifi_x + 10, wifi_y + 16 + i, id(hot_element));      // Top-left to bottom-right
+          LN(wifi_x - 10, wifi_y + 16 + i, wifi_x + 10, wifi_y + i, id(hot_element));      // Bottom-left to top-right
         }
       }
 
       if (program_active) {
         // ═══ RUNNING: show active countdown ═══
         if (id(timer_state) == 2) {
-          it.print(62, timer_start_y, id(font_normal), timer_color,
+          P(62, timer_start_y, id(font_normal), timer_color,
                    TextAlign::TOP_CENTER, "PREHEATING");
         } else if (id(timer_state) == 3) {
-          it.print(62, timer_start_y, id(font_normal), id(on_element),
+          P(62, timer_start_y, id(font_normal), id(on_element),
                    TextAlign::TOP_CENTER, "OVEN READY");
-          it.print(62, timer_start_y + timer_countdown_height + timer_spacing,
+          P(62, timer_start_y + timer_countdown_height + timer_spacing,
                    id(font_small), id(text_color), TextAlign::TOP_CENTER,
                    "Press to start");
         } else if (id(timer_state) == 4 && id(cook_mode) == 1 && !std::isnan(id(current_food_temp))) {
           // Probe mode cooking: show food temp → target
           float ft = id(current_food_temp);
           float ft_target = id(food_target_temperature);
-          it.printf(62, timer_start_y, id(font_large), id(on_element),
+          PF(62, timer_start_y, id(font_large), id(on_element),
                     TextAlign::TOP_CENTER, "%.0f°C", ft);
           if (ft_target > 0.0f) {
-            it.printf(62, timer_start_y + timer_countdown_height + timer_spacing,
+            PF(62, timer_start_y + timer_countdown_height + timer_spacing,
                       id(font_small), id(text_color), TextAlign::TOP_CENTER,
                       "Target: %.0f°C", ft_target);
           } else {
-            it.print(62, timer_start_y + timer_countdown_height + timer_spacing,
+            P(62, timer_start_y + timer_countdown_height + timer_spacing,
                      id(font_small), id(text_color), TextAlign::TOP_CENTER,
                      "PROBE MODE");
           }
@@ -668,7 +692,7 @@ display:
           int rem_sec = shown_sec % 3600;
           int mins = rem_sec / 60;
           int secs = rem_sec % 60;
-          it.printf(62, timer_start_y, id(font_large), timer_color,
+          PF(62, timer_start_y, id(font_large), timer_color,
                     TextAlign::TOP_CENTER, "%02d:%02d:%02d", hours, mins, secs);
         }
         // Total programmed cook time (skip in ready state and probe-mode cooking)
@@ -677,7 +701,7 @@ display:
         } else if (id(timer_state) == 4 && id(cook_mode) == 1 && !std::isnan(id(current_food_temp))) {
           // Probe mode: sub-message already shown above
         } else if (id(cook_total_seconds) <= 0) {
-          it.print(62, timer_start_y + timer_countdown_height + timer_spacing,
+          P(62, timer_start_y + timer_countdown_height + timer_spacing,
                    id(font_small), id(text_color), TextAlign::TOP_CENTER,
                    "NO TIMER");
         } else {
@@ -687,7 +711,7 @@ display:
           int t_rem = total_sec % 3600;
           int t_mins = t_rem / 60;
           int t_secs = t_rem % 60;
-          it.printf(62, timer_start_y + timer_countdown_height + timer_spacing,
+          PF(62, timer_start_y + timer_countdown_height + timer_spacing,
                     id(font_small), id(text_color), TextAlign::TOP_CENTER,
                     "%02d:%02d:%02d", t_hours, t_mins, t_secs);
         }
@@ -696,7 +720,7 @@ display:
         bool time_diff = ((int)(id(working_timer) * 60.0f) != id(cook_total_seconds));
         if (temp_diff || time_diff) {
           int draft_y = timer_start_y + timer_countdown_height + timer_spacing + timer_total_height + 6;
-          it.printf(62, draft_y, id(font_small), id(selected_element),
+          PF(62, draft_y, id(font_small), id(selected_element),
                     TextAlign::TOP_CENTER, "Draft: %.0f°C", id(working_temperature));
         }
       } else {
@@ -708,10 +732,10 @@ display:
           int dr = d_total % 3600;
           int dm = dr / 60;
           int ds = dr % 60;
-          it.printf(62, timer_start_y, id(font_large), id(selected_element),
+          PF(62, timer_start_y, id(font_large), id(selected_element),
                     TextAlign::TOP_CENTER, "%02d:%02d:%02d", dh, dm, ds);
         } else {
-          it.print(62, timer_start_y, id(font_normal), id(selected_element),
+          P(62, timer_start_y, id(font_normal), id(selected_element),
                    TextAlign::TOP_CENTER, "NO TIMER");
         }
         // Show draft delay
@@ -719,11 +743,11 @@ display:
         if (draft_del > 0) {
           int del_h = (int)draft_del / 60;
           int del_m = (int)draft_del % 60;
-          it.printf(62, timer_start_y + timer_countdown_height + timer_spacing,
+          PF(62, timer_start_y + timer_countdown_height + timer_spacing,
                     id(font_small), id(selected_element), TextAlign::TOP_CENTER,
                     "Delay: %02d:%02d", del_h, del_m);
         } else {
-          it.print(62, timer_start_y + timer_countdown_height + timer_spacing,
+          P(62, timer_start_y + timer_countdown_height + timer_spacing,
                    id(font_small), id(selected_element), TextAlign::TOP_CENTER,
                    "Start: Now");
         }
@@ -731,11 +755,11 @@ display:
 
       // Knob role labels at the very bottom
       int bottom_y = it.get_height() - 4;
-      it.print(10, bottom_y, id(font_small), id(text_color),
+      P(10, bottom_y, id(font_small), id(text_color),
                TextAlign::BOTTOM_LEFT, "TIME");
-      it.print(it.get_width() / 2, bottom_y, id(font_small), id(text_color),
+      P(it.get_width() / 2, bottom_y, id(font_small), id(text_color),
                TextAlign::BOTTOM_CENTER, "MODE");
-      it.print(it.get_width() - 10, bottom_y, id(font_small), id(text_color),
+      P(it.get_width() - 10, bottom_y, id(font_small), id(text_color),
                TextAlign::BOTTOM_RIGHT, "TEMP");
 
       // ═══════════════════════════════════════════════════════════
@@ -748,14 +772,14 @@ display:
         // Main temp: active when running, draft when idle
         float main_temp = program_active ? target : id(working_temperature);
         Color main_temp_color = program_active ? id(text_color) : id(selected_element);
-        it.printf(62, target_temp_y, id(font_xlarge), main_temp_color, TextAlign::TOP_CENTER, "%.0f°C", main_temp);
+        PF(62, target_temp_y, id(font_xlarge), main_temp_color, TextAlign::TOP_CENTER, "%.0f°C", main_temp);
 
         // Current real temp (small, yellow) - below main temp
-        it.printf(62, current_temp_y, id(font_small), id(hot_element), TextAlign::TOP_CENTER, "%.0f°C", current_temp);
+        PF(62, current_temp_y, id(font_small), id(hot_element), TextAlign::TOP_CENTER, "%.0f°C", current_temp);
 
         // Food probe temperature (only if probe is connected)
         if (!std::isnan(id(current_food_temp))) {
-          it.printf(62, current_temp_y + 18, id(font_small), id(on_element), TextAlign::TOP_CENTER,
+          PF(62, current_temp_y + 18, id(font_small), id(on_element), TextAlign::TOP_CENTER,
                     "Food: %.0f°C", id(current_food_temp));
         }
       }
@@ -771,12 +795,15 @@ display:
         float delay_min = id(working_start_delay);
         bool editing_duration = (id(timer_edit_phase) == 0);
         bool program_running = id(timer_state) >= 1;
+        // Probe connected -> this page sets the food target instead of duration.
+        bool probe_mode = (id(cook_mode) == 1);
 
         int cx = it.get_width() / 2;
 
         // Title
-        it.print(cx, 8, id(font_normal), id(text_color),
-                 TextAlign::TOP_CENTER, program_running ? "EDIT TIMER" : "SET TIMER");
+        P(cx, 8, id(font_normal), id(text_color), TextAlign::TOP_CENTER,
+                 program_running ? (probe_mode ? "EDIT PROBE" : "EDIT TIMER")
+                                 : (probe_mode ? "SET PROBE" : "SET TIMER"));
 
         // Helper lambda to print minutes as HH:MM
         auto print_time = [&](int x, int y, float minutes, bool active) {
@@ -787,21 +814,35 @@ display:
           int hours = total / 60;
           int mins = total % 60;
           Color col = active ? id(on_element) : id(text_color);
-          it.printf(x, y, id(font_large), col, TextAlign::TOP_CENTER, "%02d:%02d", hours, mins);
+          PF(x, y, id(font_large), col, TextAlign::TOP_CENTER, "%02d:%02d", hours, mins);
         };
 
-        // Duration block
+        // Primary block: food target (probe mode) or cook duration (timer mode)
         {
           Color label_color = editing_duration ? id(on_element) : id(text_color);
-          it.print(cx, 40, id(font_small), label_color,
-                   TextAlign::TOP_CENTER, "DURATION");
-
-          if (duration_min <= 0.0f) {
-            Color col = editing_duration ? id(on_element) : id(off_element);
-            it.print(cx, 68, id(font_large), col,
-                     TextAlign::TOP_CENTER, "NO TIMER");
+          if (probe_mode) {
+            P(cx, 40, id(font_small), label_color,
+                     TextAlign::TOP_CENTER, "FOOD TARGET");
+            float ft = id(food_target_temperature);
+            if (ft <= 0.0f) {
+              Color col = editing_duration ? id(on_element) : id(off_element);
+              P(cx, 68, id(font_large), col,
+                       TextAlign::TOP_CENTER, "NOT SET");
+            } else {
+              Color col = editing_duration ? id(on_element) : id(text_color);
+              PF(cx, 68, id(font_large), col,
+                        TextAlign::TOP_CENTER, "%.0f°C", ft);
+            }
           } else {
-            print_time(cx, 68, duration_min, editing_duration);
+            P(cx, 40, id(font_small), label_color,
+                     TextAlign::TOP_CENTER, "DURATION");
+            if (duration_min <= 0.0f) {
+              Color col = editing_duration ? id(on_element) : id(off_element);
+              P(cx, 68, id(font_large), col,
+                       TextAlign::TOP_CENTER, "NO TIMER");
+            } else {
+              print_time(cx, 68, duration_min, editing_duration);
+            }
           }
         }
 
@@ -810,12 +851,12 @@ display:
           bool delay_locked = program_running;
           bool editing_start = !editing_duration && !delay_locked;
           Color label_color = delay_locked ? id(off_element) : (editing_start ? id(on_element) : id(text_color));
-          it.print(cx, 120, id(font_small), label_color,
+          P(cx, 120, id(font_small), label_color,
                    TextAlign::TOP_CENTER, delay_locked ? "DELAY (LOCKED)" : "WHEN TO START");
 
           if (delay_min <= 0.0f) {
             Color col = editing_start ? id(on_element) : id(off_element);
-            it.print(cx, 148, id(font_large), col,
+            P(cx, 148, id(font_large), col,
                      TextAlign::TOP_CENTER, "NOW");
           } else {
             Color col = delay_locked ? id(off_element) : (editing_start ? id(on_element) : id(text_color));
@@ -823,39 +864,22 @@ display:
             if (total < 0) total = 0;
             int hours = total / 60;
             int mins = total % 60;
-            it.printf(cx, 148, id(font_large), col, TextAlign::TOP_CENTER, "%02d:%02d", hours, mins);
-          }
-        }
-
-        // Cook mode indicator (only when food probe is connected)
-        bool probe_plugged = !std::isnan(id(current_food_temp));
-        if (probe_plugged) {
-          bool is_probe_mode = (id(cook_mode) == 1);
-          Color mode_color = is_probe_mode ? id(on_element) : id(text_color);
-          it.printf(cx, 195, id(font_small), mode_color, TextAlign::TOP_CENTER,
-                    "Mode: %s", is_probe_mode ? "PROBE" : "TIMER");
-          if (is_probe_mode) {
-            float ft = id(food_target_temperature);
-            if (ft > 0.0f) {
-              it.printf(cx, 213, id(font_small), id(on_element), TextAlign::TOP_CENTER,
-                        "Target: %.0f°C", ft);
-            } else {
-              it.print(cx, 213, id(font_small), id(off_element), TextAlign::TOP_CENTER,
-                       "No target set");
-            }
+            PF(cx, 148, id(font_large), col, TextAlign::TOP_CENTER, "%02d:%02d", hours, mins);
           }
         }
 
         // Instructions at bottom
         const char* msg;
         if (program_running) {
-          msg = "Rotate to adjust duration - Press to done";
+          msg = probe_mode ? "Rotate to adjust target - Press to done"
+                           : "Rotate to adjust duration - Press to done";
         } else if (editing_duration) {
-          msg = "Rotate to set duration - Press to set start";
+          msg = probe_mode ? "Rotate to set food target - Press to set start"
+                           : "Rotate to set duration - Press to set start";
         } else {
           msg = "Rotate to set start - Press to done";
         }
-        it.print(cx, it.get_height() - 8, id(font_small), id(off_element),
+        P(cx, it.get_height() - 8, id(font_small), id(off_element),
                  TextAlign::BOTTOM_CENTER, msg);
       }
 
@@ -866,13 +890,13 @@ display:
         float temp = id(working_temperature);
         
         // Title
-        it.print(it.get_width() / 2, 10, id(font_normal), id(text_color), 
+        P(it.get_width() / 2, 10, id(font_normal), id(text_color), 
                  TextAlign::TOP_CENTER, "SET TEMPERATURE");
         
         // Large temperature value (moved up)
-        it.printf(it.get_width() / 2, 55, id(font_xlarge), id(on_element), 
+        PF(it.get_width() / 2, 55, id(font_xlarge), id(on_element), 
                   TextAlign::TOP_CENTER, "%.0f", temp);
-        it.print(it.get_width() / 2, 100, id(font_large), id(on_element), 
+        P(it.get_width() / 2, 100, id(font_large), id(on_element), 
                  TextAlign::TOP_CENTER, "°C");
         
         // Temperature range bar (moved up)
@@ -882,7 +906,7 @@ display:
         int bar_height = 20;
         
         // Background bar (outline)
-        it.rectangle(bar_x, bar_y, bar_width, bar_height, id(off_element));
+        RC(bar_x, bar_y, bar_width, bar_height, id(off_element));
         
         // Filled portion based on temperature (0-280°C)
         float temp_ratio = temp / 280.0;
@@ -890,17 +914,17 @@ display:
         if (temp_ratio < 0.0) temp_ratio = 0.0;
         int fill_width = (int)(bar_width * temp_ratio);
         if (fill_width > 2) {
-          it.filled_rectangle(bar_x + 2, bar_y + 2, fill_width - 4, bar_height - 4, id(on_element));
+          FR(bar_x + 2, bar_y + 2, fill_width - 4, bar_height - 4, id(on_element));
         }
         
         // Min/Max labels
-        it.print(bar_x, bar_y + bar_height + 8, id(font_small), id(text_color), 
+        P(bar_x, bar_y + bar_height + 8, id(font_small), id(text_color), 
                  TextAlign::TOP_LEFT, "0°C");
-        it.print(bar_x + bar_width, bar_y + bar_height + 8, id(font_small), id(text_color), 
+        P(bar_x + bar_width, bar_y + bar_height + 8, id(font_small), id(text_color), 
                  TextAlign::TOP_RIGHT, "280°C");
         
         // Instructions at bottom
-        it.print(it.get_width() / 2, it.get_height() - 10, id(font_small), id(off_element), 
+        P(it.get_width() / 2, it.get_height() - 10, id(font_small), id(off_element), 
                  TextAlign::BOTTOM_CENTER, "Rotate to adjust - Press to confirm");
       }
 
@@ -915,7 +939,7 @@ display:
         bool fan_on = id(desired_fan_element);
         
         // Title
-        it.print(it.get_width() / 2, 10, id(font_normal), id(text_color), 
+        P(it.get_width() / 2, 10, id(font_normal), id(text_color), 
                  TextAlign::TOP_CENTER, "SELECT ELEMENTS");
         
         // Element list with toggle indicators
@@ -928,36 +952,36 @@ display:
         // Selection indicator (arrow)
         int arrow_x = 5;
         int arrow_y = start_y + (selected * line_height) + 10;
-        it.print(arrow_x, arrow_y, id(font_normal), id(on_element), TextAlign::CENTER, ">");
+        P(arrow_x, arrow_y, id(font_normal), id(on_element), TextAlign::CENTER, ">");
         
         // Top Element
         Color top_text_color = (selected == 0) ? id(on_element) : id(text_color);
-        it.print(x_left, start_y, id(font_normal), top_text_color, TextAlign::TOP_LEFT, "Top Element");
+        P(x_left, start_y, id(font_normal), top_text_color, TextAlign::TOP_LEFT, "Top Element");
         Color top_color = top_on ? id(on_element) : id(off_element);
-        it.print(x_right, start_y, id(font_normal), top_color, TextAlign::TOP_RIGHT, top_on ? "ON" : "OFF");
+        P(x_right, start_y, id(font_normal), top_color, TextAlign::TOP_RIGHT, top_on ? "ON" : "OFF");
         
         // Bottom Element
         Color bottom_text_color = (selected == 1) ? id(on_element) : id(text_color);
-        it.print(x_left, start_y + line_height, id(font_normal), bottom_text_color, TextAlign::TOP_LEFT, "Bottom Element");
+        P(x_left, start_y + line_height, id(font_normal), bottom_text_color, TextAlign::TOP_LEFT, "Bottom Element");
         Color bottom_color = bottom_on ? id(on_element) : id(off_element);
-        it.print(x_right, start_y + line_height, id(font_normal), bottom_color, TextAlign::TOP_RIGHT, bottom_on ? "ON" : "OFF");
+        P(x_right, start_y + line_height, id(font_normal), bottom_color, TextAlign::TOP_RIGHT, bottom_on ? "ON" : "OFF");
         
         // Grill Element
         Color grill_text_color = (selected == 2) ? id(on_element) : id(text_color);
-        it.print(x_left, start_y + line_height * 2, id(font_normal), grill_text_color, TextAlign::TOP_LEFT, "Grill");
+        P(x_left, start_y + line_height * 2, id(font_normal), grill_text_color, TextAlign::TOP_LEFT, "Grill");
         Color grill_color = grill_on ? id(on_element) : id(off_element);
-        it.print(x_right, start_y + line_height * 2, id(font_normal), grill_color, TextAlign::TOP_RIGHT, grill_on ? "ON" : "OFF");
+        P(x_right, start_y + line_height * 2, id(font_normal), grill_color, TextAlign::TOP_RIGHT, grill_on ? "ON" : "OFF");
         
         // Fan
         Color fan_text_color = (selected == 3) ? id(on_element) : id(text_color);
-        it.print(x_left, start_y + line_height * 3, id(font_normal), fan_text_color, TextAlign::TOP_LEFT, "Fan");
+        P(x_left, start_y + line_height * 3, id(font_normal), fan_text_color, TextAlign::TOP_LEFT, "Fan");
         Color fan_color = fan_on ? id(on_element) : id(off_element);
-        it.print(x_right, start_y + line_height * 3, id(font_normal), fan_color, TextAlign::TOP_RIGHT, fan_on ? "ON" : "OFF");
+        P(x_right, start_y + line_height * 3, id(font_normal), fan_color, TextAlign::TOP_RIGHT, fan_on ? "ON" : "OFF");
         
         // Back option (not toggleable)
         Color back_text_color = (selected == 4) ? id(on_element) : id(text_color);
-        it.print(x_left, start_y + line_height * 4, id(font_normal), back_text_color, TextAlign::TOP_LEFT, "Back");
-        it.print(x_right, start_y + line_height * 4, id(font_normal), id(text_color), TextAlign::TOP_RIGHT, "Press");
+        P(x_left, start_y + line_height * 4, id(font_normal), back_text_color, TextAlign::TOP_LEFT, "Back");
+        P(x_right, start_y + line_height * 4, id(font_normal), id(text_color), TextAlign::TOP_RIGHT, "Press");
       }
 
       // ═══════════════════════════════════════════════════════════
@@ -967,23 +991,34 @@ display:
         int cx = it.get_width() / 2;
         bool running = id(timer_state) != 0;
 
-        it.print(cx, 10, id(font_normal), id(on_element),
+        P(cx, 10, id(font_normal), id(on_element),
                  TextAlign::TOP_CENTER, running ? "UPDATE PROGRAM?" : "START PROGRAM?");
 
         // Draft summary
         int y = 42;
-        it.printf(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER,
+        PF(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER,
                   "Temperature: %.0f C", id(working_temperature));
         y += 20;
 
-        float dur = id(working_timer);
-        if (dur > 0) {
-          int h = (int)dur / 60;
-          int m = (int)dur % 60;
-          it.printf(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER,
-                    "Duration: %02d:%02d", h, m);
+        if (id(cook_mode) == 1) {
+          // Probe mode: cook ends on food target, not a duration
+          float ft = id(food_target_temperature);
+          if (ft > 0) {
+            PF(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER,
+                      "Food target: %.0f C", ft);
+          } else {
+            P(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Food target: NOT SET");
+          }
         } else {
-          it.print(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Duration: NO TIMER");
+          float dur = id(working_timer);
+          if (dur > 0) {
+            int h = (int)dur / 60;
+            int m = (int)dur % 60;
+            PF(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER,
+                      "Duration: %02d:%02d", h, m);
+          } else {
+            P(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Duration: NO TIMER");
+          }
         }
         y += 20;
 
@@ -992,25 +1027,36 @@ display:
           if (del > 0) {
             int dh = (int)del / 60;
             int dm = (int)del % 60;
-            it.printf(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER,
+            PF(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER,
                       "Delay: %02d:%02d", dh, dm);
           } else {
-            it.print(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Delay: NOW");
+            P(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Delay: NOW");
           }
           y += 20;
         } else {
-          // Show time delta for running program
-          int new_total = (int)(id(working_timer) * 60.0f);
-          int delta_sec = new_total - id(cook_total_seconds);
-          if (delta_sec != 0) {
-            int abs_d = delta_sec < 0 ? -delta_sec : delta_sec;
-            int dm = abs_d / 60;
-            int ds = abs_d % 60;
-            char sign = delta_sec > 0 ? '+' : '-';
-            it.printf(cx, y, id(font_small), id(hot_element), TextAlign::TOP_CENTER,
-                      "Time: %c%d:%02d", sign, dm, ds);
+          if (id(cook_mode) == 1) {
+            // Probe mode: no countdown to update, just show the food target
+            float ft = id(food_target_temperature);
+            if (ft > 0) {
+              PF(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER,
+                        "Food target: %.0f C", ft);
+            } else {
+              P(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Food target: NOT SET");
+            }
           } else {
-            it.print(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Time: no change");
+            // Show time delta for running program
+            int new_total = (int)(id(working_timer) * 60.0f);
+            int delta_sec = new_total - id(cook_total_seconds);
+            if (delta_sec != 0) {
+              int abs_d = delta_sec < 0 ? -delta_sec : delta_sec;
+              int dm = abs_d / 60;
+              int ds = abs_d % 60;
+              char sign = delta_sec > 0 ? '+' : '-';
+              PF(cx, y, id(font_small), id(hot_element), TextAlign::TOP_CENTER,
+                        "Time: %c%d:%02d", sign, dm, ds);
+            } else {
+              P(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Time: no change");
+            }
           }
           y += 20;
 
@@ -1022,12 +1068,12 @@ display:
             int ddm = abs_dd / 60;
             int dds = abs_dd % 60;
             char dsign = dd_sec > 0 ? '+' : '-';
-            it.printf(cx, y, id(font_small), id(hot_element), TextAlign::TOP_CENTER,
+            PF(cx, y, id(font_small), id(hot_element), TextAlign::TOP_CENTER,
                       "Delay: %c%d:%02d", dsign, ddm, dds);
           } else if (id(timer_state) == 1) {
-            it.print(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Delay: no change");
+            P(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Delay: no change");
           } else {
-            it.print(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Delay: passed");
+            P(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Delay: passed");
           }
           y += 20;
         }
@@ -1039,12 +1085,12 @@ display:
         if (id(desired_grill_element)) strcat(elems, "Grl ");
         if (id(desired_fan_element)) strcat(elems, "Fan ");
         if (strlen(elems) == 0) strcpy(elems, "None");
-        it.printf(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Elements: %s", elems);
+        PF(cx, y, id(font_small), id(text_color), TextAlign::TOP_CENTER, "Elements: %s", elems);
 
         // Instructions at bottom
-        it.print(cx, it.get_height() - 28, id(font_normal), id(on_element),
+        P(cx, it.get_height() - 28, id(font_normal), id(on_element),
                  TextAlign::BOTTOM_CENTER, "Press TIME to confirm");
-        it.print(cx, it.get_height() - 8, id(font_small), id(off_element),
+        P(cx, it.get_height() - 8, id(font_small), id(off_element),
                  TextAlign::BOTTOM_CENTER, "Any other to cancel");
       }
 
@@ -1055,14 +1101,14 @@ display:
         int cx = it.get_width() / 2;
         int cy = it.get_height() / 2;
 
-        it.print(cx, cy - 40, id(font_large), id(on_element),
+        P(cx, cy - 40, id(font_large), id(on_element),
                  TextAlign::CENTER, "CANCEL");
-        it.print(cx, cy - 10, id(font_large), id(on_element),
+        P(cx, cy - 10, id(font_large), id(on_element),
                  TextAlign::CENTER, "PROGRAM?");
 
-        it.print(cx, it.get_height() - 28, id(font_normal), id(on_element),
+        P(cx, it.get_height() - 28, id(font_normal), id(on_element),
                  TextAlign::BOTTOM_CENTER, "Press MODE to confirm");
-        it.print(cx, it.get_height() - 8, id(font_small), id(off_element),
+        P(cx, it.get_height() - 8, id(font_small), id(off_element),
                  TextAlign::BOTTOM_CENTER, "Any other to cancel");
       }
 
@@ -1073,13 +1119,13 @@ display:
         int cx = it.get_width() / 2;
         int cy = it.get_height() / 2;
         if (id(kids_lock)) {
-          it.print(cx, cy - 35, id(font_large), id(on_element), TextAlign::CENTER, "LOCKED");
-          it.print(cx, cy + 5, id(font_normal), id(text_color), TextAlign::CENTER, "Child lock is on");
-          it.print(cx, cy + 35, id(font_small), id(off_element), TextAlign::CENTER,
+          P(cx, cy - 35, id(font_large), id(on_element), TextAlign::CENTER, "LOCKED");
+          P(cx, cy + 5, id(font_normal), id(text_color), TextAlign::CENTER, "Child lock is on");
+          P(cx, cy + 35, id(font_small), id(off_element), TextAlign::CENTER,
                    "Hold MODE + TEMP 5s to unlock");
         } else {
-          it.print(cx, cy - 20, id(font_large), id(on_element), TextAlign::CENTER, "UNLOCKED");
-          it.print(cx, cy + 20, id(font_small), id(off_element), TextAlign::CENTER, "Child lock off");
+          P(cx, cy - 20, id(font_large), id(on_element), TextAlign::CENTER, "UNLOCKED");
+          P(cx, cy + 20, id(font_small), id(off_element), TextAlign::CENTER, "Child lock off");
         }
       }
 
@@ -1139,6 +1185,20 @@ globals:
     type: bool
     restore_value: no
     initial_value: "false"
+
+  # Global UI draw offset (px), live-tunable from Home Assistant. Shifts every
+  # drawn element to re-center the mipi_spi ILI9341 window and stop edge
+  # clipping. restore_value keeps tuned values across reboots; once happy, bake
+  # the final numbers into initial_value here.
+  - id: ui_offset_x
+    type: int
+    restore_value: yes
+    initial_value: "0"
+
+  - id: ui_offset_y
+    type: int
+    restore_value: yes
+    initial_value: "0"
 
   # Current oven cavity temperature (updated from MAX31865 PT100 RTD).
   - id: current_oven_temp
@@ -1229,10 +1289,18 @@ globals:
     initial_value: "0"
 
   # NTC B-constant for the food probe (configurable via web server / HA)
+  # 3950 is typical for a 100K NTC meat probe; adjust to match your probe's datasheet.
   - id: food_probe_b_constant
     type: float
     restore_value: yes
-    initial_value: "3435.0"
+    initial_value: "3950.0"
+
+  # NTC nominal resistance at 25°C (Ω). Single-point calibration knob: set this to
+  # the "Food Probe Resistance (Debug)" reading taken at a known 25°C.
+  - id: food_probe_r0
+    type: float
+    restore_value: yes
+    initial_value: "100000.0"
 
   # Cooling fan (light relay) stays on until temp drops below this threshold
   - id: cooldown_temp_threshold
@@ -1353,8 +1421,9 @@ sensor:
         - lambda: |-
             id(current_oven_temp) = x;
 
-  # NTC 10K food probe via voltage divider on GPIO7.
+  # NTC 100K food probe via voltage divider on GPIO7.
   # 3.3V → 10K resistor → GPIO7 → NTC probe (2.5mm jack) → GND.
+  # The fixed divider resistor is 10K (hardware); the probe nominal is 100K @ 25°C.
   # When probe is unplugged, readings are out of range → NaN.
   - platform: adc
     id: food_probe_adc
@@ -1374,16 +1443,33 @@ sensor:
         - lambda: |-
             // Steinhart-Hart simplified (B-parameter): T = 1 / (1/T0 + (1/B)*ln(R/R0))
             float R = x;
-            if (std::isnan(R) || R < 1.0f || R > 150000.0f) {
+            float B = id(food_probe_b_constant);
+            float R0 = id(food_probe_r0);  // NTC nominal resistance at 25°C (tunable)
+            float T0 = 298.15f;  // 25°C in Kelvin
+
+            // Debug: always publish the raw resistance and the computed temperature,
+            // ungated, so the probe can be inspected in HA even when "disconnected".
+            // These do NOT feed cooking logic or the UI.
+            id(food_probe_resistance_debug).publish_state(R);
+            float t_debug = NAN;
+            if (!std::isnan(R) && R > 0.0f) {
+              float t_kelvin = 1.0f / ((1.0f / T0) + (1.0f / B) * logf(R / R0));
+              t_debug = t_kelvin - 273.15f;
+            }
+            id(food_probe_temperature_debug).publish_state(t_debug);
+
+            // Functional path: gate out-of-range readings to NaN so cooking logic
+            // and the UI ignore a disconnected/implausible probe.
+            // With the 10K fixed divider, an UNPLUGGED 100K probe floats the node
+            // high and computes to ~300K+ Ω (~1-2°C). A connected probe at usable
+            // temps reads well under 160K Ω (~100-130K at room temp, far less when
+            // hot), so we treat anything above 160K Ω as "disconnected".
+            if (std::isnan(R) || R < 1.0f || R > 160000.0f) {
               id(current_food_temp) = NAN;
               id(food_probe_temperature).publish_state(NAN);
               return;
             }
-            float B = id(food_probe_b_constant);
-            float R0 = 10000.0f;
-            float T0 = 298.15f;  // 25°C in Kelvin
-            float t_kelvin = 1.0f / ((1.0f / T0) + (1.0f / B) * logf(R / R0));
-            float t_celsius = t_kelvin - 273.15f;
+            float t_celsius = t_debug;
             if (t_celsius < -10.0f || t_celsius > 300.0f) {
               id(current_food_temp) = NAN;
               id(food_probe_temperature).publish_state(NAN);
@@ -1403,6 +1489,25 @@ sensor:
           window_size: 5
           send_every: 1
           send_first_at: 1
+
+  # Debug: ungated probe temperature (always published, even when "disconnected").
+  # For probe diagnostics/tuning only — not used by cooking logic or the UI.
+  - platform: template
+    id: food_probe_temperature_debug
+    name: "Food Probe Temperature (Debug)"
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    update_interval: never
+    entity_category: diagnostic
+
+  # Debug: raw probe resistance (always published).
+  - platform: template
+    id: food_probe_resistance_debug
+    name: "Food Probe Resistance (Debug)"
+    unit_of_measurement: "Ω"
+    accuracy_decimals: 0
+    update_interval: never
+    entity_category: diagnostic
 
   # Runtime temperature exposed to HA as the current oven temperature.
   # Fed by MAX31865 PT100 via current_oven_temp global.
@@ -1597,13 +1702,20 @@ sensor:
               if (id(working_temperature) < 0) id(working_temperature) = 0;
               if (id(working_temperature) > 280) id(working_temperature) = 280;
             } else if (id(current_page) == 1) {
-              // On timer page: adjust duration/start in 30 min steps
-              float step = 30.0f;
+              // On timer page (coarse steps).
               if (id(timer_edit_phase) == 0) {
-                id(working_timer) += direction * step;
-                if (id(working_timer) < 0) id(working_timer) = 0;
+                if (id(cook_mode) == 1) {
+                  // Probe mode: set food target temperature (10°C steps)
+                  id(food_target_temperature) += direction * 10;
+                  if (id(food_target_temperature) < 0) id(food_target_temperature) = 0;
+                  if (id(food_target_temperature) > 300) id(food_target_temperature) = 300;
+                } else {
+                  // Timer mode: adjust duration in 30 min steps
+                  id(working_timer) += direction * 30.0f;
+                  if (id(working_timer) < 0) id(working_timer) = 0;
+                }
               } else {
-                id(working_start_delay) += direction * step;
+                id(working_start_delay) += direction * 30.0f;
                 if (id(working_start_delay) < 0) id(working_start_delay) = 0;
               }
             }
@@ -1659,15 +1771,22 @@ sensor:
               if (id(working_temperature) < 0) id(working_temperature) = 0;
               if (id(working_temperature) > 280) id(working_temperature) = 280;
             } else if (id(current_page) == 1) {
-              // On timer page: adjust duration/start in 1 min steps
-              float step = 1.0f;
+              // On timer page (fine steps).
               if (id(timer_edit_phase) == 0) {
-                id(working_timer) += direction * step;
-                if (id(working_timer) < 0) id(working_timer) = 0;
+                if (id(cook_mode) == 1) {
+                  // Probe mode: set food target temperature (1°C steps)
+                  id(food_target_temperature) += direction * 1;
+                  if (id(food_target_temperature) < 0) id(food_target_temperature) = 0;
+                  if (id(food_target_temperature) > 300) id(food_target_temperature) = 300;
+                } else {
+                  // Timer mode: adjust duration in 1 min steps
+                  id(working_timer) += direction * 1.0f;
+                  if (id(working_timer) < 0) id(working_timer) = 0;
+                }
               } else {
                 // Lock delay editing when program is running
                 if (id(timer_state) == 0) {
-                  id(working_start_delay) += direction * step;
+                  id(working_start_delay) += direction * 1.0f;
                   if (id(working_start_delay) < 0) id(working_start_delay) = 0;
                 }
               }
@@ -1724,14 +1843,21 @@ sensor:
               if (id(working_temperature) < 0) id(working_temperature) = 0;
               if (id(working_temperature) > 280) id(working_temperature) = 280;
             } else if (id(current_page) == 1) {
-              // On timer page: adjust duration/start in 10 min steps
-              float step = 10.0f;
+              // On timer page (medium steps).
               if (id(timer_edit_phase) == 0) {
-                id(working_timer) += direction * step;
-                if (id(working_timer) < 0) id(working_timer) = 0;
+                if (id(cook_mode) == 1) {
+                  // Probe mode: set food target temperature (5°C steps)
+                  id(food_target_temperature) += direction * 5;
+                  if (id(food_target_temperature) < 0) id(food_target_temperature) = 0;
+                  if (id(food_target_temperature) > 300) id(food_target_temperature) = 300;
+                } else {
+                  // Timer mode: adjust duration in 10 min steps
+                  id(working_timer) += direction * 10.0f;
+                  if (id(working_timer) < 0) id(working_timer) = 0;
+                }
               } else {
                 if (id(timer_state) == 0) {
-                  id(working_start_delay) += direction * step;
+                  id(working_start_delay) += direction * 10.0f;
                   if (id(working_start_delay) < 0) id(working_start_delay) = 0;
                 }
               }
@@ -1894,11 +2020,14 @@ number:
     step: 1
     mode: box
     update_interval: 1s
+    # Read-only: cook mode is auto-selected from probe presence
+    # (0 = TIMER when unplugged, 1 = PROBE when connected). Manual changes are
+    # ignored and the control snaps back to the current auto value.
     lambda: |-
       return id(cook_mode);
     set_action:
       - lambda: |-
-          id(cook_mode) = (int)x;
+          id(ha_cook_mode).publish_state(id(cook_mode));
 
   - platform: template
     id: ha_food_probe_b_constant
@@ -1916,6 +2045,62 @@ number:
           if (x < 2000) x = 2000;
           if (x > 5000) x = 5000;
           id(food_probe_b_constant) = x;
+
+  - platform: template
+    id: ha_food_probe_r0
+    name: "Food Probe R0 (25C)"
+    icon: "mdi:omega"
+    unit_of_measurement: "Ω"
+    min_value: 1000
+    max_value: 200000
+    step: 100
+    mode: box
+    update_interval: 1s
+    lambda: |-
+      return id(food_probe_r0);
+    set_action:
+      - lambda: |-
+          if (x < 1000) x = 1000;
+          if (x > 200000) x = 200000;
+          id(food_probe_r0) = x;
+
+  # Live display alignment: drag these until the UI is fully on-screen (no
+  # clipped edges), then copy the values into ui_offset_x/ui_offset_y globals.
+  - platform: template
+    id: ha_ui_offset_x
+    name: "UI Offset X"
+    icon: "mdi:arrow-left-right"
+    unit_of_measurement: "px"
+    min_value: -40
+    max_value: 40
+    step: 1
+    mode: slider
+    update_interval: 1s
+    lambda: |-
+      return id(ui_offset_x);
+    set_action:
+      - lambda: |-
+          if (x < -40) x = -40;
+          if (x > 40) x = 40;
+          id(ui_offset_x) = (int) x;
+
+  - platform: template
+    id: ha_ui_offset_y
+    name: "UI Offset Y"
+    icon: "mdi:arrow-up-down"
+    unit_of_measurement: "px"
+    min_value: -40
+    max_value: 40
+    step: 1
+    mode: slider
+    update_interval: 1s
+    lambda: |-
+      return id(ui_offset_y);
+    set_action:
+      - lambda: |-
+          if (x < -40) x = -40;
+          if (x > 40) x = 40;
+          id(ui_offset_y) = (int) x;
 
 # Text sensors
 text_sensor:
@@ -2370,6 +2555,13 @@ interval:
           // Timer state machine (NO auto-start; programs only start via apply_program)
           int state = id(timer_state);
 
+          // Cook mode follows the probe: connected -> PROBE (1), otherwise TIMER (0).
+          // Only derived while idle so the mode is latched for the whole run and
+          // unplugging the probe mid-cook can't switch modes underneath us.
+          if (state == 0) {
+            id(cook_mode) = std::isnan(id(current_food_temp)) ? 0 : 1;
+          }
+
           // Resume an in-progress cook after power loss
           if (state == 0 && id(timer_cook_remaining) > 0) {
             if (id(timer_delay_remaining) > 0) {
@@ -2429,14 +2621,14 @@ interval:
             }
             if (timeout_sec > 0 && id(preheat_elapsed_seconds) >= timeout_sec) {
               id(pid_climate).reset_integral_term();
-              id(timer_state) = (id(cook_total_seconds) > 0) ? 3 : 4;
+              id(timer_state) = (id(cook_total_seconds) > 0 || id(cook_mode) == 1) ? 3 : 4;
               id(buzzer_preheat_finished).execute();
             }
 
             if (target > 0.0f && heating_elements_selected) {
               if (current_temp >= target - 1.0f) {
                 id(pid_climate).reset_integral_term();
-                id(timer_state) = (id(cook_total_seconds) > 0) ? 3 : 4;
+                id(timer_state) = (id(cook_total_seconds) > 0 || id(cook_mode) == 1) ? 3 : 4;
                 id(buzzer_preheat_finished).execute();
               }
             }
