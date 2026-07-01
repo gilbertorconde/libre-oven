@@ -71,6 +71,7 @@ A **PID Autotune** button is exposed to Home Assistant. To run autotune:
 6. Update the `control_parameters` in the YAML with the new values.
 
 Autotune parameters:
+
 - `positive_output: 0.7` (70% maximum heat output during autotune)
 - `noiseband: 0.05` (tight noise band for accurate oscillation detection)
 
@@ -131,6 +132,34 @@ The UI uses multiple pages controlled by the encoder buttons:
   - Auto-dismisses back to the main screen ~5 s after the last knob touch.
   - See [Child Lock](#child-lock).
 
+---
+
+## Display (ST7789V)
+
+The 2.4" TFT uses an **ST7789V** controller (240×320 native). The UI is drawn for **320×240 landscape**.
+
+### Firmware configuration
+
+```yaml
+display:
+  - platform: mipi_spi
+    model: ST7789V
+    spi_id: spi_display
+    cs_pin: GPIO15
+    dc_pin: GPIO12
+    rotation: 270
+    update_interval: 125ms
+```
+
+- Driver: ESPHome **`mipi_spi`**.
+- **`rotation: 270`** — required for correct landscape orientation on this hardware; `rotation: 90` appears upside-down.
+- No manual `dimensions` or `invert_colors` — defaults match this panel.
+- UI accent colors are defined in the `color:` block (`on_element`, `hot_element`, etc.) as standard RGB hex values.
+
+### Optional alignment tuning
+
+`UI Offset X` / `UI Offset Y` number entities (±40 px) nudge the whole UI if needed; values persist across reboots.
+
 ### Encoder Step Patterns
 
 On each page, the three encoders behave as:
@@ -185,13 +214,13 @@ stateDiagram-v2
 
 ### Timer state values
 
-| Code | Name       | Description |
-|------|------------|-------------|
-| 0    | Idle       | No program running |
-| 1    | Waiting    | Delay countdown before cook |
-| 2    | Preheating | Heating to target temperature |
+| Code | Name       | Description                                          |
+| ---- | ---------- | ---------------------------------------------------- |
+| 0    | Idle       | No program running                                   |
+| 1    | Waiting    | Delay countdown before cook                          |
+| 2    | Preheating | Heating to target temperature                        |
 | 3    | Ready      | At temperature, waiting for user to press any button |
-| 4    | Cooking    | Active cooking, timer counting down |
+| 4    | Cooking    | Active cooking, timer counting down                  |
 
 ### "Ready" state behavior
 
@@ -396,6 +425,7 @@ The logger uses `deassert_rts_dtr: true` to prevent DTR/RTS signals from holding
 The following entities are exposed to Home Assistant:
 
 ### Sensors
+
 - Oven Temperature (current reading from PT100)
 - Active Temperature (target when program is running)
 - Timer State (text: IDLE/WAITING/PREHEATING/READY/COOKING)
@@ -410,6 +440,7 @@ The following entities are exposed to Home Assistant:
 - Food Probe Temperature (Debug) and Food Probe Resistance (Debug) — ungated raw readings for calibration (diagnostic)
 
 ### Binary sensors
+
 - Active Top/Bottom/Grill/Fan Element — whether each element is in the running program (for draft-change detection)
 - Top/Bottom/Grill Element State (0=off, 1=selected, 2=armed, 3=heating)
 - Fan Element State (0=off, 1=selected, 2=active)
@@ -419,6 +450,7 @@ The following entities are exposed to Home Assistant:
 - PID Heat Output, Proportional, Integral, Derivative, Error, Kp, Ki, Kd
 
 ### Controls
+
 - Set Temperature (number, 0-280 °C)
 - Cook Duration (number, minutes)
 - Start Delay (number, minutes)
@@ -426,6 +458,7 @@ The following entities are exposed to Home Assistant:
 - Cook Mode (number, read-only, 0 = timer / 1 = probe — auto-selected from probe presence)
 - Food Probe B-Constant (number — tune to match your probe; default 3950)
 - Food Probe R0 (25C) (number — probe nominal resistance for single-point calibration; default 100000)
+- UI Offset X / UI Offset Y (number, px — optional display alignment fine-tuning)
 - Top/Bottom/Grill/Fan Element Selected (switches)
 - Kids Lock (switch — locks the physical knobs; HA stays usable)
 - Apply Program (button)

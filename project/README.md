@@ -65,7 +65,7 @@ With Libre Oven you can freely combine any elements and the fan, beyond the orig
 | Qty | Component | Notes |
 |-----|-----------|-------|
 | 1 | ESP32-S3-DevKitC-1 (WROOM-1-N16R8) | 16 MB Flash, 8 MB PSRAM |
-| 1 | 2.4" ILI9341 TFT LCD | SPI, 240x320 |
+| 1 | 2.4" ST7789V TFT LCD | SPI, 240×320 panel (320×240 landscape UI in firmware) |
 | 1 | MAX31865 breakout board | For PT100 RTD, 430 Ω reference resistor |
 | 1 | 3-wire PT100 RTD probe | Oven-rated, high temperature |
 | 3 | Rotary encoders with push button | KY-040 or equivalent |
@@ -85,7 +85,7 @@ With Libre Oven you can freely combine any elements and the fan, beyond the orig
 │                     ESP32-S3-DevKitC-1                   │
 │                                                          │
 │  SPI Bus 1 ──── MAX31865 ──── PT100 RTD (oven cavity)   │
-│  SPI Bus 2 ──── ILI9341 TFT Display                     │
+│  SPI Bus 2 ──── ST7789V TFT Display                     │
 │                                                          │
 │  GPIO ──── 3x Rotary Encoders (Timer, Temp, Mode)        │
 │  GPIO ──── 5x SSR Outputs (Top, Bottom, Grill, Fan, Light)│
@@ -126,7 +126,7 @@ The PCB connects the ESP32-S3 devkit to all peripherals: SSR outputs, encoder in
 ESP32-S3 ────├── SSR ── Convection fan (230V)
   (3.3V)     ├── SSR ── Oven light + cooling fan (230V)
               ├── Buzzer (via NPN)
-              ├── ILI9341 TFT (SPI)
+              ├── ST7789V TFT (SPI)
               ├── MAX31865 + PT100 (SPI)
               └── 3x Rotary encoders
 ```
@@ -146,7 +146,7 @@ The SSRs switch 230 V AC loads. The ESP32 drives the SSR control inputs with 3.3
 | CLK (SCK) | GPIO18 | CLK |
 | CS | GPIO17 | CS |
 
-### SPI Bus 2 -- ILI9341 TFT Display
+### SPI Bus 2 -- ST7789V TFT Display
 
 | Signal | GPIO | Display Pin |
 |--------|------|------------|
@@ -156,6 +156,8 @@ The SSRs switch 230 V AC loads. The ESP32 drives the SSR control inputs with 3.3
 | CS | GPIO15 | CS |
 | Backlight | GPIO11 | BL |
 | RST | -- | Not connected (software reset) |
+
+The panel controller is an **ST7789V** (240×320 native). Firmware uses the ESPHome **`mipi_spi`** driver with `model: ST7789V` and **`rotation: 270`** so the UI renders in **320×240 landscape** on this mounting. Do not use the deprecated `ili9xxx` driver or ILI9341 model — this display is not an ILI9341.
 
 ### Rotary Encoders
 
@@ -249,7 +251,7 @@ Printable STL files and FreeCAD source files are in [`cad/`](cad/).
 
 | File | Description |
 |------|-------------|
-| `lcd-box-Body.stl` | Enclosure for the 2.4" ILI9341 TFT display |
+| `lcd-box-Body.stl` | Enclosure for the 2.4" ST7789V TFT display |
 | `lcd-box.FCStd` | FreeCAD source for the display enclosure |
 | `oven-rotery-holder-Body.stl` | Adapter to mount the new rotary encoders into the original oven knob holes |
 | `oven-rotery-holder.FCStd` | FreeCAD source for the encoder adapter |
