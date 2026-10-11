@@ -85,6 +85,12 @@ ota:
 # Enable web server for local access
 web_server:
   port: 80
+  # Required: the web_server OTA above is otherwise an unauthenticated
+  # firmware upload (the esphome OTA password doesn't cover it).
+  auth:
+    type: digest
+    username: admin
+    password: !secret ota_password
 
 # Status LED (onboard LED)
 status_led:
