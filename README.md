@@ -149,7 +149,7 @@ Four tiles in a 2×2 grid, each opening a bottom-sheet for editing:
 - **Timer tile**: Cook remaining countdown during COOKING, "Preheating"/"Oven ready" during those states, set cook total when WAITING. Shows the applied set value beneath.
 - **Start Delay tile**: Delay remaining countdown during WAITING, "Done" once delay has passed. Shows the applied set value beneath.
 - **Elements tile**: Active element summary (Top + Bottom + Grill + Fan).
-- **Temperature tile**: Current temperature, set temperature, and food probe temperature (when connected) side by side. Tap **Current** to open Home Assistant's history graph for the oven temperature; tap elsewhere on the tile to set the temperature.
+- **Temperature tile**: Current temperature, set temperature, and food probe temperature (when connected) side by side. Tap **Current** to see the oven temperature graph: during a program it opens Home Assistant's History page starting at the program's preheat (found from the recorder), otherwise the entity's more-info dialog. Tap elsewhere on the tile to set the temperature.
 
 Controls in the sheets:
 - **Temperature**: draggable arc thermostat with +/− 5°C buttons

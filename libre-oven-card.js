@@ -1233,7 +1233,7 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
     </div>
     <div class="tile" data-action="open-temperature">
       <div class="temp-tile-inner">
-        <div class="temp-col temp-col-link" data-action="more-info-temp" title="Show temperature history">
+        <div class="temp-col temp-col-link" data-action="more-info-temp" title="Show temperature history (from the preheat during a program)">
           <span class="temp-col-lbl">Current</span>
           <span class="temp-col-val temp-current">${curTemp}</span>
         </div>
@@ -1524,13 +1524,9 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
       case 'open-elements':    this._openSheet('elements');    return;
       case 'open-temperature': this._openSheet('temperature'); return;
 
-      // Native HA more-info dialog (history graph) for the oven temperature
+      // Oven temperature history (native HA graph)
       case 'more-info-temp':
-        if (ent.oven_temperature) {
-          this.dispatchEvent(new CustomEvent('hass-more-info', {
-            detail: { entityId: ent.oven_temperature }, bubbles: true, composed: true,
-          }));
-        }
+        this._openTempHistory();
         return;
 
       // Temperature arc +/- buttons
@@ -1608,6 +1604,62 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
         this._adjustNumberInput('food-target-input', ent.food_target_temperature, delta, 0, 300);
         break;
       }
+    }
+  }
+
+  // ── Temperature history ────────────────────────────────────────────────────
+
+  // During a program, open HA's History panel starting at the preheat, so the
+  // whole session is on one graph (the more-info dialog can't take a start
+  // time). Otherwise, or if the start can't be found, open more-info.
+  async _openTempHistory() {
+    const ent = this._config.entities;
+    if (!ent.oven_temperature) return;
+    const start = this._readState().programActive ? await this._findSessionStart() : null;
+    if (!start) {
+      this.dispatchEvent(new CustomEvent('hass-more-info', {
+        detail: { entityId: ent.oven_temperature }, bubbles: true, composed: true,
+      }));
+      return;
+    }
+    const from = new Date(start.getTime() - 60 * 1000);  // 1 min of baseline
+    const url = `/history?entity_id=${encodeURIComponent(ent.oven_temperature)}`
+      + `&start_date=${encodeURIComponent(from.toISOString())}`
+      + `&end_date=${encodeURIComponent(new Date().toISOString())}`;
+    window.history.pushState(null, '', url);
+    window.dispatchEvent(new CustomEvent('location-changed', { detail: { replace: false } }));
+  }
+
+  // Start of the current program's preheat, from the recorder: walk back
+  // through timer_state_code to the last idle (0) state. Within that run, the
+  // first entry into preheating (2) wins; a program without preheat (fan-only)
+  // uses the run's start. Unavailable gaps (power loss) don't end the run.
+  async _findSessionStart() {
+    const id = this._config.entities.timer_state_code;
+    if (!id || !this._hass.callWS) return null;
+    try {
+      const res = await this._hass.callWS({
+        type: 'history/history_during_period',
+        start_time: new Date(Date.now() - 12 * 3600 * 1000).toISOString(),
+        entity_ids: [id],
+        minimal_response: true,
+        no_attributes: true,
+        significant_changes_only: false,
+      });
+      const rows = res?.[id] || [];
+      let runStart = null;
+      let preheatStart = null;
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const code = Number.parseFloat(rows[i].s);
+        if (!Number.isFinite(code)) continue;  // unavailable/unknown
+        if (code === 0) break;
+        const t = new Date((rows[i].lc ?? rows[i].lu) * 1000);
+        runStart = t;
+        if (code === 2) preheatStart = t;
+      }
+      return preheatStart || runStart;
+    } catch (err) {
+      return null;
     }
   }
 
