@@ -1372,9 +1372,9 @@ globals:
     restore_value: no
     initial_value: "0.0"
 
-  # Max ramp speed (°C/min), tunable from HA. The 20°C lead gate below means the
-  # ramp never outruns the oven, so a high value just lets the oven heat at full
-  # power through the bulk of the climb.
+  # Max ramp speed (°C/min), tunable from HA. The lead gate in the runtime loop
+  # (40/20/10°C) means the ramp never outruns the oven, so a high value just lets
+  # the oven heat at full power through the bulk of the climb.
   - id: preheat_ramp_max_rate
     type: float
     restore_value: yes
@@ -2878,14 +2878,20 @@ interval:
               // preheat_ramp_max_rate: full speed for the bulk of the climb, then
               // an exponential ease-in over the last ~35°C so the oven lands on
               // target without overshoot. Floor of 3°C/min so the tail still ends.
-              // Adaptive: only advance if the oven is within 20°C of the ramp setpoint.
+              // Adaptive: only advance while the setpoint leads the oven by less
+              // than max_lead. The lead sets how hard the PID pushes: at a 20°C
+              // lead the derivative term (kd on the measured rise) holds output
+              // near 50% at a 7.5°C/min climb, so far from target allow 40°C
+              // (full power), then 20°C, then 10°C for the last 20°C to land.
               // Must exceed deadband threshold_high (5°C) so PID gets full gains during ramp.
               float ramp_rate = (target - id(preheat_ramp_setpoint)) * 0.4f;
               if (ramp_rate > id(preheat_ramp_max_rate)) ramp_rate = id(preheat_ramp_max_rate);
               if (ramp_rate < 3.0f) ramp_rate = 3.0f;
               float ramp_step = ramp_rate / 60.0f;
+              float remaining = target - current_temp;
+              float max_lead = remaining > 40.0f ? 40.0f : (remaining >= 20.0f ? 20.0f : 10.0f);
               float ramp_error = id(preheat_ramp_setpoint) - current_temp;
-              if (ramp_error < 20.0f) {
+              if (ramp_error < max_lead) {
                 id(preheat_ramp_setpoint) += ramp_step;
                 if (id(preheat_ramp_setpoint) > target) {
                   id(preheat_ramp_setpoint) = target;

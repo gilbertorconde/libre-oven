@@ -243,10 +243,16 @@ If a program is started with only the fan selected (no heating elements or tempe
 During preheating the PID does not chase the final target directly (that winds up the integral and overshoots). Instead its setpoint ramps from the current temperature toward the target:
 
 - **Speed scales with the distance left**: `rate = 0.4 × (target − setpoint)` °C/min, capped at `preheat_ramp_max_rate` (default **15 °C/min**, adjustable from HA as `Preheat Ramp Max Rate`) and floored at 3 °C/min.
-- Far from the target this runs at the cap, so the oven heats at full power through the bulk of the climb; over the last ~35 °C it eases in exponentially (2.5 min time constant), so the oven lands on the target without overshoot.
-- The setpoint only advances while the oven is within 20 °C of it, so the ramp never outruns what the oven can actually do.
+- Over the last ~35 °C it eases in exponentially (2.5 min time constant), so the oven lands on the target without overshoot.
+- **Lead limit**: the setpoint only advances while it is less than *max lead* above the oven, so the ramp never outruns what the oven can actually do. The lead sets how hard the PID pushes (the derivative term brakes against the measured rise, holding output near 50% at a 20 °C lead), so it depends on the distance left to the target:
 
-If preheat overshoots, lower `Preheat Ramp Max Rate`; previously the ramp was a fixed 6 °C/min (~30 min for 200 °C).
+  | Oven still below target by | Max lead |
+  | --- | --- |
+  | more than 40 °C | 40 °C (full power) |
+  | 20–40 °C | 20 °C |
+  | under 20 °C | 10 °C |
+
+Measured on a 200 °C preheat with a fixed 20 °C lead: 30 min, peak +2.1 °C (previously a fixed 6 °C/min ramp, ~45 min). If preheat overshoots, lower `Preheat Ramp Max Rate` or the leads.
 
 ### Preheating timeout
 
