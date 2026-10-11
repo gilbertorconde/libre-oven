@@ -1364,17 +1364,21 @@ globals:
     restore_value: no
     initial_value: "0"
 
-  # Preheat ramp: PID setpoint ramps from current temp toward target at this rate.
-  # 6°C/min. Keeps PID error small, preventing integral windup and overshoot.
+  # Preheat ramp: PID setpoint ramps from current temp toward target. Keeps PID
+  # error small, preventing integral windup and overshoot. The ramp runs at up
+  # to preheat_ramp_max_rate far from target and eases in exponentially near it.
   - id: preheat_ramp_setpoint
     type: float
     restore_value: no
     initial_value: "0.0"
 
-  - id: preheat_ramp_rate
+  # Max ramp speed (°C/min), tunable from HA. The 20°C lead gate below means the
+  # ramp never outruns the oven, so a high value just lets the oven heat at full
+  # power through the bulk of the climb.
+  - id: preheat_ramp_max_rate
     type: float
     restore_value: yes
-    initial_value: "6.0"
+    initial_value: "15.0"
 
   - id: pid_heat_was_active
     type: bool
@@ -2191,6 +2195,27 @@ number:
           if (x > 200000) x = 200000;
           id(food_probe_r0) = x;
 
+  # Preheat speed: max ramp rate of the PID setpoint. Lower it if preheat
+  # overshoots the target; raise it if the oven sits below the ramp at full power.
+  - platform: template
+    id: ha_preheat_ramp_max_rate
+    name: "Preheat Ramp Max Rate"
+    icon: "mdi:speedometer"
+    unit_of_measurement: "°C/min"
+    entity_category: config
+    min_value: 3
+    max_value: 30
+    step: 1
+    mode: box
+    update_interval: 1s
+    lambda: |-
+      return id(preheat_ramp_max_rate);
+    set_action:
+      - lambda: |-
+          if (x < 3) x = 3;
+          if (x > 30) x = 30;
+          id(preheat_ramp_max_rate) = x;
+
   # Live display alignment: drag these until the UI is fully on-screen (no
   # clipped edges), then copy the values into ui_offset_x/ui_offset_y globals.
   - platform: template
@@ -2848,10 +2873,17 @@ interval:
                 id(preheat_elapsed_seconds)++;
               }
 
-              // Ramp the setpoint toward target at preheat_ramp_rate °C/min.
+              // Ramp the setpoint toward target. Speed scales with the distance
+              // left (0.4/min, i.e. a 2.5 min time constant), capped at
+              // preheat_ramp_max_rate: full speed for the bulk of the climb, then
+              // an exponential ease-in over the last ~35°C so the oven lands on
+              // target without overshoot. Floor of 3°C/min so the tail still ends.
               // Adaptive: only advance if the oven is within 20°C of the ramp setpoint.
               // Must exceed deadband threshold_high (5°C) so PID gets full gains during ramp.
-              float ramp_step = id(preheat_ramp_rate) / 60.0f;
+              float ramp_rate = (target - id(preheat_ramp_setpoint)) * 0.4f;
+              if (ramp_rate > id(preheat_ramp_max_rate)) ramp_rate = id(preheat_ramp_max_rate);
+              if (ramp_rate < 3.0f) ramp_rate = 3.0f;
+              float ramp_step = ramp_rate / 60.0f;
               float ramp_error = id(preheat_ramp_setpoint) - current_temp;
               if (ramp_error < 20.0f) {
                 id(preheat_ramp_setpoint) += ramp_step;
@@ -2860,13 +2892,10 @@ interval:
                 }
               }
 
-              // Dynamic timeout: target / ramp_rate + 25% margin
-              // Prevents getting stuck if the oven can't keep up with the ramp.
-              int timeout_sec = 0;
-              if (id(preheat_ramp_rate) > 0.0f) {
-                float ramp_minutes = target / id(preheat_ramp_rate);
-                timeout_sec = (int)(ramp_minutes * 60.0f * 1.25f);
-              }
+              // Safety timeout, independent of the ramp speed: as long as a
+              // 6°C/min climb would take, + 25%. Prevents getting stuck if the
+              // oven can't reach the target.
+              int timeout_sec = (int)(target / 6.0f * 60.0f * 1.25f);
               bool timed_out = timeout_sec > 0 && id(preheat_elapsed_seconds) >= timeout_sec;
               bool reached = current_temp >= target - 1.0f;
               if (timed_out || reached) {

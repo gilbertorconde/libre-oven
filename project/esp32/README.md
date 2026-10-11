@@ -238,9 +238,19 @@ After preheating completes, the oven enters a **ready** state that:
 
 If a program is started with only the fan selected (no heating elements or temperature = 0), the preheating phase is skipped entirely and the program goes directly to cooking. This allows using the oven fan for cooling or air circulation without heating.
 
+### Preheat ramp
+
+During preheating the PID does not chase the final target directly (that winds up the integral and overshoots). Instead its setpoint ramps from the current temperature toward the target:
+
+- **Speed scales with the distance left**: `rate = 0.4 × (target − setpoint)` °C/min, capped at `preheat_ramp_max_rate` (default **15 °C/min**, adjustable from HA as `Preheat Ramp Max Rate`) and floored at 3 °C/min.
+- Far from the target this runs at the cap, so the oven heats at full power through the bulk of the climb; over the last ~35 °C it eases in exponentially (2.5 min time constant), so the oven lands on the target without overshoot.
+- The setpoint only advances while the oven is within 20 °C of it, so the ramp never outruns what the oven can actually do.
+
+If preheat overshoots, lower `Preheat Ramp Max Rate`; previously the ramp was a fixed 6 °C/min (~30 min for 200 °C).
+
 ### Preheating timeout
 
-A configurable timeout (`preheat_timeout_minutes`, default **20 minutes**) prevents the oven from being stuck in preheating indefinitely. When the timeout expires, the system transitions to ready/cooking regardless of whether the target temperature was reached. Set to 0 to disable.
+A safety timeout prevents the oven from being stuck in preheating indefinitely: as long as a 6 °C/min climb to the target would take, plus 25 % (~42 min for 200 °C). When it expires, the system transitions to ready/cooking regardless of whether the target temperature was reached.
 
 ### Live program updates
 
