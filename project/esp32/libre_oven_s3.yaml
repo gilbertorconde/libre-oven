@@ -2284,7 +2284,7 @@ text_sensor:
       int h = sec / 3600;
       int m = (sec % 3600) / 60;
       int s = sec % 60;
-      char buf[12];
+      char buf[16];  // fits int hours up to 6 digits: "596523:59:59"
       snprintf(buf, sizeof(buf), "%02d:%02d:%02d", h, m, s);
       return std::string(buf);
 
@@ -2298,7 +2298,7 @@ text_sensor:
       int h = sec / 3600;
       int m = (sec % 3600) / 60;
       int s = sec % 60;
-      char buf[12];
+      char buf[16];  // fits int hours up to 6 digits: "596523:59:59"
       snprintf(buf, sizeof(buf), "%02d:%02d:%02d", h, m, s);
       return std::string(buf);
 
@@ -2315,7 +2315,7 @@ text_sensor:
       int h = sec / 3600;
       int m = (sec % 3600) / 60;
       int s = sec % 60;
-      char buf[12];
+      char buf[16];  // fits int hours up to 6 digits: "596523:59:59"
       snprintf(buf, sizeof(buf), "%02d:%02d:%02d", h, m, s);
       return std::string(buf);
 
