@@ -93,6 +93,12 @@ web_server:
     username: admin
     password: !secret ota_password
 
+# Commit restored globals (program state, timers) to flash every 5s instead of
+# the default 60s, so a power cut shortly after cancelling can't resume the
+# cancelled program. NVS is wear-levelled; 5s is fine for this write volume.
+preferences:
+  flash_write_interval: 5s
+
 # Status LED (onboard LED)
 status_led:
   pin:
@@ -289,6 +295,24 @@ display:
         const char *dot_str = dots == 1 ? "." : (dots == 2 ? ".." : "...");
         P(cx, cy + 15, id(font_normal), id(off_element),
                  TextAlign::CENTER, dot_str);
+        return;
+      }
+
+      // ── Temperature fault: overrides every page until cleared ──────
+      if (id(sensor_fault)) {
+        int cx = it.get_width() / 2;
+        int cy = it.get_height() / 2;
+        P(cx, cy - 45, id(font_large), id(hot_element), TextAlign::CENTER,
+                 id(fault_reason) == 2 ? "OVER TEMP" : "SENSOR FAULT");
+        P(cx, cy - 5, id(font_normal), id(text_color), TextAlign::CENTER, "Heating disabled");
+        if (std::isnan(id(current_oven_temp))) {
+          P(cx, cy + 25, id(font_normal), id(text_color), TextAlign::CENTER, "Oven: --");
+        } else {
+          PF(cx, cy + 25, id(font_normal), id(text_color), TextAlign::CENTER,
+                    "Oven: %.0f°C", id(current_oven_temp));
+        }
+        P(cx, it.get_height() - 8, id(font_small), id(off_element), TextAlign::BOTTOM_CENTER,
+                 "Press any knob to retry");
         return;
       }
 
@@ -669,7 +693,15 @@ display:
           P(62, timer_start_y + timer_countdown_height + timer_spacing,
                    id(font_small), id(text_color), TextAlign::TOP_CENTER,
                    "Press to start");
-        } else if (id(timer_state) == 4 && id(cook_mode) == 1 && !std::isnan(id(current_food_temp))) {
+        } else if (id(timer_state) == 4 && id(cook_mode) == 1 && std::isnan(id(current_food_temp))) {
+          // Probe mode cooking but the probe stopped reading (unplugged, or
+          // below ~15°C where the 10K divider can't tell it from unplugged)
+          P(62, timer_start_y, id(font_large), id(hot_element),
+                   TextAlign::TOP_CENTER, "NO PROBE");
+          P(62, timer_start_y + timer_countdown_height + timer_spacing,
+                   id(font_small), id(text_color), TextAlign::TOP_CENTER,
+                   "Check probe");
+        } else if (id(timer_state) == 4 && id(cook_mode) == 1) {
           // Probe mode cooking: show food temp → target
           float ft = id(current_food_temp);
           float ft_target = id(food_target_temperature);
@@ -695,7 +727,7 @@ display:
         // Total programmed cook time (skip in ready state and probe-mode cooking)
         if (id(timer_state) == 3) {
           // Already displayed "Press to start" above
-        } else if (id(timer_state) == 4 && id(cook_mode) == 1 && !std::isnan(id(current_food_temp))) {
+        } else if (id(timer_state) == 4 && id(cook_mode) == 1) {
           // Probe mode: sub-message already shown above
         } else if (id(cook_total_seconds) <= 0) {
           P(62, timer_start_y + timer_countdown_height + timer_spacing,
@@ -772,7 +804,11 @@ display:
         PF(62, target_temp_y, id(font_xlarge), main_temp_color, TextAlign::TOP_CENTER, "%.0f°C", main_temp);
 
         // Current real temp (small, yellow) - below main temp
-        PF(62, current_temp_y, id(font_small), id(hot_element), TextAlign::TOP_CENTER, "%.0f°C", current_temp);
+        if (std::isnan(current_temp)) {
+          P(62, current_temp_y, id(font_small), id(hot_element), TextAlign::TOP_CENTER, "--°C");
+        } else {
+          PF(62, current_temp_y, id(font_small), id(hot_element), TextAlign::TOP_CENTER, "%.0f°C", current_temp);
+        }
 
         // Food probe temperature (only if probe is connected)
         if (!std::isnan(id(current_food_temp))) {
@@ -1203,10 +1239,83 @@ globals:
     initial_value: "false"
 
   # Current oven cavity temperature (updated from MAX31865 PT100 RTD).
+  # NAN = no valid reading (not yet read, or stale): never assume a cold oven.
   - id: current_oven_temp
     type: float
     restore_value: no
-    initial_value: "20.0"
+    initial_value: "NAN"
+
+  # millis() of the last valid RTD reading (0 = none yet). Watched by the 1s
+  # runtime loop: a stale reading latches a sensor fault.
+  - id: last_valid_temp_ms
+    type: unsigned long
+    restore_value: no
+    initial_value: "0"
+
+  # Hard over-temperature limit (°C). Above this the program is cancelled
+  # and heating is latched off. Max setpoint is 280°C; keep headroom for overshoot.
+  - id: overtemp_limit
+    type: float
+    restore_value: no
+    initial_value: "310.0"
+
+  # Latched temperature fault: heating disabled until cleared by a knob press
+  # while the sensor is healthy again. Reason: 1 = no valid RTD reading, 2 = over temp.
+  - id: sensor_fault
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+  - id: fault_reason
+    type: int
+    restore_value: no
+    initial_value: "0"
+
+  # timer_state as of the last runtime tick, persisted so a program interrupted
+  # by a power cut can be resumed (through a fresh preheat) after reboot.
+  - id: saved_timer_state
+    type: int
+    restore_value: yes
+    initial_value: "0"
+
+  # One-shot: the power-loss resume decision runs once, on the first valid
+  # temperature reading after boot.
+  - id: boot_resume_checked
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+  # Set when resuming a cook that was already in the cooking phase: after the
+  # re-preheat, continue straight to cooking instead of waiting in READY.
+  - id: resumed_cook
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+  # Seconds spent in preheat/ready/cook for the current program. The program
+  # is force-cancelled at max_program_seconds whatever the timer/probe says.
+  - id: program_elapsed_seconds
+    type: int
+    restore_value: yes
+    initial_value: "0"
+
+  - id: max_program_seconds
+    type: int
+    restore_value: no
+    initial_value: "28800" # 8 hours
+
+  # Consecutive seconds the food probe has read at/above target. The cook only
+  # ends after a few seconds, so a single noisy ADC sample can't stop it.
+  - id: food_at_target_seconds
+    type: int
+    restore_value: no
+    initial_value: "0"
+
+  # Probe-mode cook lost its probe reading (shown on screen; cleared on recovery)
+  - id: probe_lost
+    type: bool
+    restore_value: no
+    initial_value: "false"
 
   # Working values - only updated when on correct page
   - id: working_temperature
@@ -1241,7 +1350,7 @@ globals:
   # Remaining seconds for delay and cooking phases (for main screen)
   - id: timer_delay_remaining
     type: int
-    restore_value: no
+    restore_value: yes
     initial_value: "0"
 
   - id: timer_cook_remaining
@@ -1422,6 +1531,7 @@ sensor:
       then:
         - lambda: |-
             id(current_oven_temp) = x;
+            id(last_valid_temp_ms) = millis();
 
   # NTC 100K food probe via voltage divider on GPIO7.
   # 3.3V → 10K resistor → GPIO7 → NTC probe (2.5mm jack) → GND.
@@ -1686,6 +1796,9 @@ sensor:
             id(wake_screen).execute();
             if (delta == 0) return;
 
+            // Temperature fault: rotation only wakes the screen (press clears)
+            if (id(sensor_fault)) return;
+
             // Kids lock: ignore rotation, just show the lock popup
             if (id(kids_lock)) { id(current_page) = 6; return; }
 
@@ -1755,6 +1868,9 @@ sensor:
             bool was_sleeping = id(screen_sleeping);
             id(wake_screen).execute();
             if (delta == 0) return;
+
+            // Temperature fault: rotation only wakes the screen (press clears)
+            if (id(sensor_fault)) return;
 
             // Kids lock: ignore rotation, just show the lock popup
             if (id(kids_lock)) { id(current_page) = 6; return; }
@@ -1830,6 +1946,9 @@ sensor:
             bool was_sleeping = id(screen_sleeping);
             id(wake_screen).execute();
             if (delta == 0) return;
+
+            // Temperature fault: rotation only wakes the screen (press clears)
+            if (id(sensor_fault)) return;
 
             // Kids lock: ignore rotation, just show the lock popup
             if (id(kids_lock)) { id(current_page) = 6; return; }
@@ -2185,6 +2304,14 @@ binary_sensor:
     lambda: |-
       return !std::isnan(id(current_food_temp));
 
+  # Latched temperature fault (no valid RTD reading, or over temp)
+  - platform: template
+    id: ha_temperature_fault
+    name: "Temperature Fault"
+    device_class: problem
+    lambda: |-
+      return id(sensor_fault);
+
   # Active element flags (what's in the running program) — for draft-change detection
   - platform: template
     id: ha_active_top_element
@@ -2235,6 +2362,7 @@ binary_sensor:
             if (id(button_mode).state) return;
             bool was_sleeping = id(screen_sleeping);
             id(wake_screen).execute();
+            if (id(sensor_fault)) { id(clear_sensor_fault).execute(); return; }
             // Kids lock: ignore the press, just show the lock popup
             if (id(kids_lock)) { id(current_page) = 6; return; }
             if (!was_sleeping) {
@@ -2268,6 +2396,7 @@ binary_sensor:
         - lambda: |-
             bool was_sleeping = id(screen_sleeping);
             id(wake_screen).execute();
+            if (id(sensor_fault)) { id(clear_sensor_fault).execute(); return; }
             // Kids lock: ignore the press, just show the lock popup
             if (id(kids_lock)) { id(current_page) = 6; return; }
             if (!was_sleeping) {
@@ -2325,6 +2454,7 @@ binary_sensor:
             if (id(button_temperature).state) return;
             bool was_sleeping = id(screen_sleeping);
             id(wake_screen).execute();
+            if (id(sensor_fault)) { id(clear_sensor_fault).execute(); return; }
             // Kids lock: ignore the press, just show the lock popup
             if (id(kids_lock)) { id(current_page) = 6; return; }
             if (!was_sleeping) {
@@ -2383,6 +2513,9 @@ script:
   - id: apply_program
     then:
       - lambda: |-
+          // Never start/update a program without a trustworthy oven temperature
+          if (id(sensor_fault) || std::isnan(id(current_oven_temp))) return;
+
           // Copy draft values to active
           id(active_temperature) = id(working_temperature);
           id(active_top_element) = id(desired_top_element);
@@ -2393,6 +2526,10 @@ script:
           if (id(timer_state) == 0) {
             // IDLE: start a fresh program
             id(preheat_elapsed_seconds) = 0;
+            id(program_elapsed_seconds) = 0;
+            id(resumed_cook) = false;
+            id(food_at_target_seconds) = 0;
+            id(probe_lost) = false;
             id(timer_cook_remaining) = (int)(id(working_timer) * 60.0f);
             id(cook_total_seconds) = id(timer_cook_remaining);
             id(timer_delay_remaining) = (int)(id(working_start_delay) * 60.0f);
@@ -2456,7 +2593,9 @@ script:
       - lambda: |-
           auto call = id(pid_climate).make_call();
           call.set_mode("OFF");
-          call.set_target_temperature(id(current_oven_temp));
+          if (!std::isnan(id(current_oven_temp))) {
+            call.set_target_temperature(id(current_oven_temp));
+          }
           call.perform();
           id(pid_heat_was_active) = false;
           id(top_element_relay).turn_off();
@@ -2465,6 +2604,11 @@ script:
           id(fan_relay).turn_off();
           // light_relay (cooling fan) stays on -- managed by cooldown logic in 1s interval
           id(timer_state) = 0;
+          id(saved_timer_state) = 0;  // don't resume this program after a power cut
+          id(program_elapsed_seconds) = 0;
+          id(resumed_cook) = false;
+          id(food_at_target_seconds) = 0;
+          id(probe_lost) = false;
           id(timer_delay_remaining) = 0;
           id(timer_cook_remaining) = 0;
           id(preheat_elapsed_seconds) = 0;
@@ -2483,6 +2627,29 @@ script:
           id(active_grill_element) = false;
           id(active_fan_element) = false;
           id(mode_selected_element) = 0;
+
+  # Latch a temperature fault: cancel the program, kill heating, alert.
+  # Called by the 1s runtime loop with the reason in fault_reason.
+  - id: trigger_sensor_fault
+    then:
+      - lambda: |-
+          id(sensor_fault) = true;
+          id(cancel_program).execute();
+          id(current_page) = 0;
+      - script.execute: wake_screen
+      - script.execute: buzzer_cook_finished
+
+  # Clear a latched fault, but only once the RTD reads valid and safe again
+  - id: clear_sensor_fault
+    then:
+      - lambda: |-
+          bool fresh = id(last_valid_temp_ms) != 0 &&
+                       millis() - id(last_valid_temp_ms) < 5000;
+          float t = id(current_oven_temp);
+          if (fresh && !std::isnan(t) && t < id(overtemp_limit) - 20.0f) {
+            id(sensor_fault) = false;
+            id(fault_reason) = 0;
+          }
 
   # Wake screen and reset activity timer
   - id: wake_screen
@@ -2569,17 +2736,72 @@ interval:
             id(kids_lock_gesture_handled) = false;
           }
 
-  # Core oven runtime loop (1 Hz): timer state machine and SSR gating.
+  # Core oven runtime loop (1 Hz): temperature watchdog, power-loss resume,
+  # timer state machine and SSR gating.
   # Temperature is read from MAX31865 PT100 via current_oven_temp global.
   - interval: 1s
     then:
       - lambda: |-
           int previous_state = id(last_timer_state_observed);
-          float target = id(active_temperature);
+          unsigned long now_ms = millis();
 
-          // Temperature is processed in the MAX31865 on_value callback.
-          // We just read the smoothed result here.
+          // ── Temperature watchdog ──
+          // The MAX31865 filter drops faulted/implausible readings, so a dead
+          // sensor shows up as "no new value", not as NAN. A reading older than
+          // 5s is unknown (NAN); once past startup, unknown or over-temp latches
+          // a fault that cancels the program and keeps heating off.
+          bool temp_fresh = id(last_valid_temp_ms) != 0 &&
+                            now_ms - id(last_valid_temp_ms) < 5000;
+          if (!temp_fresh) id(current_oven_temp) = NAN;
           float current_temp = id(current_oven_temp);
+          if (!id(sensor_fault)) {
+            int reason = 0;
+            if (!temp_fresh && id(startup_done)) reason = 1;
+            else if (temp_fresh && current_temp > id(overtemp_limit)) reason = 2;
+            if (reason != 0) {
+              id(fault_reason) = reason;
+              id(trigger_sensor_fault).execute();
+            }
+          }
+
+          // ── Power-loss resume (once, on the first valid reading after boot) ──
+          if (!id(boot_resume_checked) && temp_fresh) {
+            id(boot_resume_checked) = true;
+            int saved = id(saved_timer_state);
+            float saved_target = id(active_temperature);
+            bool saved_heating = id(active_top_element) || id(active_bottom_element) ||
+                                 id(active_grill_element);
+            if (id(timer_state) == 0 && saved != 0 && !id(sensor_fault)) {
+              if (saved == 1 && id(timer_delay_remaining) > 0) {
+                // Still in the start delay: keep counting it down
+                id(timer_state) = 1;
+              } else if (saved_target > 0.0f && saved_heating) {
+                // The oven cooled during the outage: always re-preheat. A cook
+                // that had already started continues straight to cooking after.
+                float init_sp = current_temp + 20.0f;
+                if (init_sp > saved_target) init_sp = saved_target;
+                id(preheat_ramp_setpoint) = init_sp;
+                id(resumed_cook) = (saved == 4);
+                id(timer_state) = 2;
+              } else {
+                id(timer_state) = 4;
+              }
+            } else if (id(timer_state) == 0) {
+              // Nothing to resume: drop program state left over from before the reboot
+              id(active_temperature) = 0.0f;
+              id(active_top_element) = false;
+              id(active_bottom_element) = false;
+              id(active_grill_element) = false;
+              id(active_fan_element) = false;
+              id(timer_cook_remaining) = 0;
+              id(timer_delay_remaining) = 0;
+              id(cook_total_seconds) = 0;
+              id(delay_total_seconds) = 0;
+              id(program_elapsed_seconds) = 0;
+            }
+          }
+
+          float target = id(active_temperature);
 
           // Timer state machine (NO auto-start; programs only start via apply_program)
           int state = id(timer_state);
@@ -2587,18 +2809,9 @@ interval:
           // Cook mode follows the probe: connected -> PROBE (1), otherwise TIMER (0).
           // Only derived while idle so the mode is latched for the whole run and
           // unplugging the probe mid-cook can't switch modes underneath us.
-          if (state == 0) {
+          // Not before the resume decision: a resumed program keeps its restored mode.
+          if (state == 0 && id(boot_resume_checked)) {
             id(cook_mode) = std::isnan(id(current_food_temp)) ? 0 : 1;
-          }
-
-          // Resume an in-progress cook after power loss
-          if (state == 0 && id(timer_cook_remaining) > 0) {
-            if (id(timer_delay_remaining) > 0) {
-              id(timer_state) = 1;
-            } else {
-              id(timer_state) = 4;
-            }
-            state = id(timer_state);
           }
 
           bool heating_elements_selected =
@@ -2624,47 +2837,53 @@ interval:
               }
             }
           } else if (state == 2) {
-            // Preheating: ramp PID setpoint from current temp toward target
-            if (id(preheat_elapsed_seconds) < 2147483647) {
-              id(preheat_elapsed_seconds)++;
-            }
-
-            // Ramp the setpoint toward target at preheat_ramp_rate °C/min.
-            // Adaptive: only advance if the oven is within 20°C of the ramp setpoint.
-            // Must exceed deadband threshold_high (5°C) so PID gets full gains during ramp.
-            float ramp_step = id(preheat_ramp_rate) / 60.0f;
-            float ramp_error = id(preheat_ramp_setpoint) - current_temp;
-            if (ramp_error < 20.0f) {
-              id(preheat_ramp_setpoint) += ramp_step;
-              if (id(preheat_ramp_setpoint) > target) {
-                id(preheat_ramp_setpoint) = target;
+            if (!(target > 0.0f && heating_elements_selected)) {
+              // Program was updated to no heat (temp 0 or no heating elements):
+              // there is nothing to preheat, so don't sit in PREHEATING forever.
+              id(resumed_cook) = false;
+              id(timer_state) = 4;
+            } else {
+              // Preheating: ramp PID setpoint from current temp toward target
+              if (id(preheat_elapsed_seconds) < 2147483647) {
+                id(preheat_elapsed_seconds)++;
               }
-            }
 
-            // Dynamic timeout: target / ramp_rate + 25% margin
-            // Prevents getting stuck if the oven can't keep up with the ramp.
-            int timeout_sec = 0;
-            if (id(preheat_ramp_rate) > 0.0f) {
-              float ramp_minutes = target / id(preheat_ramp_rate);
-              timeout_sec = (int)(ramp_minutes * 60.0f * 1.25f);
-            }
-            if (timeout_sec > 0 && id(preheat_elapsed_seconds) >= timeout_sec) {
-              id(pid_climate).reset_integral_term();
-              id(timer_state) = (id(cook_total_seconds) > 0 || id(cook_mode) == 1) ? 3 : 4;
-              id(buzzer_preheat_finished).execute();
-            }
+              // Ramp the setpoint toward target at preheat_ramp_rate °C/min.
+              // Adaptive: only advance if the oven is within 20°C of the ramp setpoint.
+              // Must exceed deadband threshold_high (5°C) so PID gets full gains during ramp.
+              float ramp_step = id(preheat_ramp_rate) / 60.0f;
+              float ramp_error = id(preheat_ramp_setpoint) - current_temp;
+              if (ramp_error < 20.0f) {
+                id(preheat_ramp_setpoint) += ramp_step;
+                if (id(preheat_ramp_setpoint) > target) {
+                  id(preheat_ramp_setpoint) = target;
+                }
+              }
 
-            if (target > 0.0f && heating_elements_selected) {
-              if (current_temp >= target - 1.0f) {
+              // Dynamic timeout: target / ramp_rate + 25% margin
+              // Prevents getting stuck if the oven can't keep up with the ramp.
+              int timeout_sec = 0;
+              if (id(preheat_ramp_rate) > 0.0f) {
+                float ramp_minutes = target / id(preheat_ramp_rate);
+                timeout_sec = (int)(ramp_minutes * 60.0f * 1.25f);
+              }
+              bool timed_out = timeout_sec > 0 && id(preheat_elapsed_seconds) >= timeout_sec;
+              bool reached = current_temp >= target - 1.0f;
+              if (timed_out || reached) {
                 id(pid_climate).reset_integral_term();
-                id(timer_state) = (id(cook_total_seconds) > 0 || id(cook_mode) == 1) ? 3 : 4;
+                // READY waits for a press before cooking; a cook resumed after a
+                // power cut had already been started, so it skips that gate.
+                bool wait_ready = !id(resumed_cook) &&
+                                  (id(cook_total_seconds) > 0 || id(cook_mode) == 1);
+                id(timer_state) = wait_ready ? 3 : 4;
+                id(resumed_cook) = false;
                 id(buzzer_preheat_finished).execute();
               }
             }
           } else if (state == 3) {
             // Ready: oven at temp, holding, waiting for user to press any button
             // PID and fan keep running (handled by allow_heat / allow_fan)
-            // No countdown, no timeout — just hold
+            // No countdown — held until pressed or the max program time cap
           } else if (state == 4) {
             // Cooking: behavior depends on cook_mode
             if (id(cook_mode) == 0) {
@@ -2679,52 +2898,85 @@ interval:
                 }
               }
             } else if (id(cook_mode) == 1) {
-              // Probe mode: auto-stop when food reaches target
+              // Probe mode: auto-stop when food has held the target for 5s
               float food = id(current_food_temp);
               float food_target = id(food_target_temperature);
-              if (food_target > 0.0f && !std::isnan(food) && food >= food_target) {
-                id(timer_state) = 0;
-                id(cancel_program).execute();
-                id(buzzer_cook_finished).execute();
+              if (std::isnan(food)) {
+                // Probe unplugged, or food below ~15°C (indistinguishable with the
+                // 10K divider): show NO PROBE and keep cooking; no beep, since cold
+                // food would false-alarm. The max program time cap still ends the run.
+                id(food_at_target_seconds) = 0;
+                if (!id(probe_lost)) {
+                  id(probe_lost) = true;
+                  id(wake_screen).execute();
+                }
+              } else {
+                id(probe_lost) = false;
+                if (food_target > 0.0f && food >= food_target) {
+                  id(food_at_target_seconds)++;
+                } else {
+                  id(food_at_target_seconds) = 0;
+                }
+                if (id(food_at_target_seconds) >= 5) {
+                  id(timer_state) = 0;
+                  id(cancel_program).execute();
+                  id(buzzer_cook_finished).execute();
+                }
               }
             }
           }
 
-          // Allow heating only when timer is in preheat/cook (states 2 or 3)
+          // Hard cap on preheat + ready + cook time, whatever the timer/probe says
+          if (id(timer_state) >= 2) {
+            id(program_elapsed_seconds)++;
+            if (id(program_elapsed_seconds) >= id(max_program_seconds)) {
+              id(cancel_program).execute();
+              id(buzzer_cook_finished).execute();
+            }
+          }
+
+          // Re-read: the state machine, a fault or the cap may have cancelled
+          target = id(active_temperature);
+
+          // Allow heating only in preheat/ready/cook (states 2-4), with a valid temperature
           bool any_heating_active =
             id(active_top_element) ||
             id(active_bottom_element) ||
             id(active_grill_element);
 
           bool allow_heat =
+            !id(sensor_fault) && !std::isnan(current_temp) &&
             (target > 0.0f && any_heating_active) &&
             (id(timer_state) == 2 || id(timer_state) == 3 || id(timer_state) == 4);
 
           // PID target: use ramp setpoint during preheating, final target otherwise
           float pid_target = (id(timer_state) == 2) ? id(preheat_ramp_setpoint) : target;
 
-          // PID gating: only update climate component on state transitions
-          if (allow_heat && !id(pid_heat_was_active)) {
-            auto call = id(pid_climate).make_call();
-            call.set_mode("HEAT");
-            call.set_target_temperature(pid_target);
-            call.perform();
-          } else if (allow_heat) {
-            if (id(pid_climate).target_temperature != pid_target) {
+          if (allow_heat) {
+            if (!id(pid_heat_was_active) || id(pid_climate).mode != climate::CLIMATE_MODE_HEAT) {
+              auto call = id(pid_climate).make_call();
+              call.set_mode("HEAT");
+              call.set_target_temperature(pid_target);
+              call.perform();
+            } else if (id(pid_climate).target_temperature != pid_target) {
               auto call = id(pid_climate).make_call();
               call.set_target_temperature(pid_target);
               call.perform();
             }
-          } else if (!allow_heat && id(pid_heat_was_active)) {
-            auto call = id(pid_climate).make_call();
-            call.set_mode("OFF");
-            call.set_target_temperature(current_temp);
-            call.perform();
+          } else {
+            // Not heating: keep the PID OFF every tick. Its default (HEAT on a
+            // fresh flash), its restored mode, or a change from HA must never
+            // leave it driving slow_pwm while idle. Relays are forced off too.
             id(top_element_relay).turn_off();
             id(bottom_element_relay).turn_off();
             id(grill_element_relay).turn_off();
-          } else if (!allow_heat) {
-            if (id(pid_climate).target_temperature != current_temp) {
+            if (id(pid_climate).mode != climate::CLIMATE_MODE_OFF) {
+              auto call = id(pid_climate).make_call();
+              call.set_mode("OFF");
+              if (!std::isnan(current_temp)) call.set_target_temperature(current_temp);
+              call.perform();
+            } else if (!std::isnan(current_temp) &&
+                       id(pid_climate).target_temperature != current_temp) {
               auto call = id(pid_climate).make_call();
               call.set_target_temperature(current_temp);
               call.perform();
@@ -2741,13 +2993,20 @@ interval:
             id(fan_relay).turn_off();
           }
 
-          // Cooling fan (light relay): ON when heating, fan running, or temp above safe threshold
+          // Cooling fan (light relay): ON when heating, fan running, or temp above
+          // safe threshold. Unknown temperature (sensor fault) counts as hot.
           if (allow_heat || allow_fan) {
             id(light_relay).turn_on();
-          } else if (current_temp > id(cooldown_temp_threshold)) {
+          } else if (std::isnan(current_temp) || current_temp > id(cooldown_temp_threshold)) {
             id(light_relay).turn_on();
           } else {
             id(light_relay).turn_off();
+          }
+
+          // Persist the program phase for power-loss resume (not before the
+          // resume decision, or the saved state would be overwritten with idle)
+          if (id(boot_resume_checked)) {
+            id(saved_timer_state) = id(timer_state);
           }
 
           // Wake display when runtime program phase changes
@@ -2759,8 +3018,8 @@ interval:
             id(wake_screen).execute();
           }
 
-          // Keep screen awake while in ready state (waiting for user)
-          if (id(timer_state) == 3) {
+          // Keep screen awake while in ready state (waiting for user) or faulted
+          if (id(timer_state) == 3 || id(sensor_fault)) {
             id(wake_screen).execute();
           }
 
