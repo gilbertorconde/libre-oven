@@ -6,12 +6,13 @@ esphome:
     priority: -100
     then:
       - script.execute: wake_screen
-      - delay: 1s
-      - lambda: |-
-          // Initialize encoders with current working values
-          id(encoder_temperature).publish_state(id(working_temperature));
-          id(encoder_timer).publish_state(id(working_timer));
-          id(encoder_mode).publish_state(id(working_mode));
+      # Startup splash: sensor data needs ~10s to settle, so the UI and the
+      # knobs stay disabled until then. A flag (not millis()) so the splash
+      # doesn't come back when millis() wraps after ~49.7 days.
+      - delay: 12s
+      - globals.set:
+          id: startup_done
+          value: "true"
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -277,7 +278,7 @@ display:
       // ── Startup splash (first 12 seconds) ──────────────────────
       // Sensor data is ignored for 10s; display stays 2s longer so
       // the first real median is ready before the UI appears.
-      if (millis() < 12000) {
+      if (!id(startup_done)) {
         int cx = it.get_width() / 2;
         int cy = it.get_height() / 2;
         P(cx, cy - 20, id(font_normal), id(text_color),
@@ -1195,6 +1196,12 @@ globals:
     restore_value: yes
     initial_value: "0"
 
+  # Set 12s after boot, once the startup splash is over.
+  - id: startup_done
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
   # Current oven cavity temperature (updated from MAX31865 PT100 RTD).
   - id: current_oven_temp
     type: float
@@ -1666,15 +1673,17 @@ sensor:
     on_value:
       then:
         - lambda: |-
-            // Ignore encoder input during startup splash
-            if (millis() < 12000) return;
-
-            bool was_sleeping = id(screen_sleeping);
-            id(wake_screen).execute();
-
+            // Track the counter before the startup guard: publish_initial_value
+            // seeds last_val at boot, so the first real detent isn't swallowed.
             static float last_val = x;
             float delta = x - last_val;
             last_val = x;
+
+            // Ignore encoder input during startup splash
+            if (!id(startup_done)) return;
+
+            bool was_sleeping = id(screen_sleeping);
+            id(wake_screen).execute();
             if (delta == 0) return;
 
             // Kids lock: ignore rotation, just show the lock popup
@@ -1734,15 +1743,17 @@ sensor:
     on_value:
       then:
         - lambda: |-
-            // Ignore encoder input during startup splash
-            if (millis() < 12000) return;
-
-            bool was_sleeping = id(screen_sleeping);
-            id(wake_screen).execute();
-
+            // Track the counter before the startup guard: publish_initial_value
+            // seeds last_val at boot, so the first real detent isn't swallowed.
             static float last_val = x;
             float delta = x - last_val;
             last_val = x;
+
+            // Ignore encoder input during startup splash
+            if (!id(startup_done)) return;
+
+            bool was_sleeping = id(screen_sleeping);
+            id(wake_screen).execute();
             if (delta == 0) return;
 
             // Kids lock: ignore rotation, just show the lock popup
@@ -1807,15 +1818,17 @@ sensor:
     on_value:
       then:
         - lambda: |-
-            // Ignore encoder input during startup splash
-            if (millis() < 12000) return;
-
-            bool was_sleeping = id(screen_sleeping);
-            id(wake_screen).execute();
-
+            // Track the counter before the startup guard: publish_initial_value
+            // seeds last_val at boot, so the first real detent isn't swallowed.
             static float last_val = x;
             float delta = x - last_val;
             last_val = x;
+
+            // Ignore encoder input during startup splash
+            if (!id(startup_done)) return;
+
+            bool was_sleeping = id(screen_sleeping);
+            id(wake_screen).execute();
             if (delta == 0) return;
 
             // Kids lock: ignore rotation, just show the lock popup
