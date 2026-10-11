@@ -393,6 +393,7 @@ A child/kids lock disables the **physical knobs** while leaving Home Assistant f
 
 - **Toggle**: press and hold both the **Mode** and **Temperature** knob buttons together for **5 seconds** (a buzzer confirms). The same gesture locks and unlocks.
 - Detection runs in a dedicated 250 ms interval reading the button states directly, so it works even while locked.
+- The Mode and Temperature buttons act on **release** of a short click (under 1.5 s), and not while the other one is held, so starting the gesture can't trigger their actions (e.g. confirming a cancel). The Timer button still acts on press. All three buttons are debounced (30 ms).
 
 ### Behaviour when locked
 

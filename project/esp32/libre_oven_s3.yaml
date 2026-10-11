@@ -2221,9 +2221,18 @@ binary_sensor:
       number: GPIO47
       mode: INPUT_PULLUP
       inverted: true
-    on_press:
+    filters:
+      - delayed_on: 30ms
+      - delayed_off: 30ms
+    # Acts on release (short click only): holding MODE + TEMP for the kids
+    # lock gesture must not trigger either button's action.
+    on_click:
+      min_length: 10ms
+      max_length: 1500ms
       then:
         - lambda: |-
+            // Released while MODE is still held: part of the lock gesture
+            if (id(button_mode).state) return;
             bool was_sleeping = id(screen_sleeping);
             id(wake_screen).execute();
             // Kids lock: ignore the press, just show the lock popup
@@ -2251,6 +2260,9 @@ binary_sensor:
       number: GPIO8
       mode: INPUT_PULLUP
       inverted: true
+    filters:
+      - delayed_on: 30ms
+      - delayed_off: 30ms
     on_press:
       then:
         - lambda: |-
@@ -2299,9 +2311,18 @@ binary_sensor:
       number: GPIO40
       mode: INPUT_PULLUP
       inverted: true
-    on_press:
+    filters:
+      - delayed_on: 30ms
+      - delayed_off: 30ms
+    # Acts on release (short click only): holding MODE + TEMP for the kids
+    # lock gesture must not trigger either button's action (e.g. cancel).
+    on_click:
+      min_length: 10ms
+      max_length: 1500ms
       then:
         - lambda: |-
+            // Released while TEMP is still held: part of the lock gesture
+            if (id(button_temperature).state) return;
             bool was_sleeping = id(screen_sleeping);
             id(wake_screen).execute();
             // Kids lock: ignore the press, just show the lock popup
