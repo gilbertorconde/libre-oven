@@ -260,7 +260,7 @@ When Apply Program is pressed while a program is already running:
   - `4` -- Cooking
 - `working_timer` -- user-editable duration (minutes). 0 = no timer, run until cancel.
 - `working_start_delay` -- user-editable start delay (minutes).
-- `timer_delay_remaining` -- delay countdown (seconds, not restored).
+- `timer_delay_remaining` -- delay countdown (seconds, **restored** across reboots).
 - `timer_cook_remaining` -- cook countdown (seconds, **restored** across reboots). 0 = no timer.
 - `cook_total_seconds` -- frozen total cook time for display (seconds, restored).
 - `delay_total_seconds` -- frozen total delay time for delta updates (seconds, restored).
@@ -280,12 +280,13 @@ bool any_heating_active =
   id(active_grill_element);
 
 bool allow_heat =
+  !id(sensor_fault) && !std::isnan(current_temp) &&
   (target > 0.0f && any_heating_active) &&
   (id(timer_state) == 2 || id(timer_state) == 3 || id(timer_state) == 4);
 ```
 
 - If `allow_heat`: PID climate is set to HEAT mode with the target temperature. The slow PWM output drives the SSRs.
-- If `!allow_heat`: PID climate is set to OFF, all heating relays are forced off.
+- If `!allow_heat`: PID climate is forced to OFF **every tick** (it defaults to HEAT on a fresh flash, restores its last mode, and can be changed from HA), and all heating relays are forced off.
 - Fan control is independent: `allow_fan = active_fan_element && program_active` (states 2, 3, or 4).
 
 ### Cooling fan safety
@@ -294,17 +295,32 @@ The light relay (which also controls the internal cooling fan) stays on whenever
 
 - Heating is active (`allow_heat`), OR
 - The oven fan is running (`allow_fan`), OR
-- The oven temperature is above the **cooldown threshold** (default 50 °C, configurable via `cooldown_temp_threshold`).
+- The oven temperature is above the **cooldown threshold** (default 50 °C, configurable via `cooldown_temp_threshold`), OR
+- The oven temperature is unknown (sensor fault).
 
 This ensures the internal cooling fan keeps running after a program ends until the oven is at a safe temperature, preventing heat damage to components.
 
 ### Resume after power loss
 
-- `timer_cook_remaining` and `cook_total_seconds` are stored (`restore_value: yes`), so:
-  - If there is remaining cook time at boot and `timer_state == 0`, the firmware resumes:
-    - State 1 if still in delay,
-    - Or state 4 (cooking) directly.
-- Once delay finishes, `working_start_delay` is cleared so the delay is **one-shot** and will not re-run after a power cycle.
+- The program phase is persisted in `saved_timer_state`, along with the timers (`timer_delay_remaining`, `timer_cook_remaining`, totals) and the active temperature/elements. Restored globals are committed to flash every **5 s** (`preferences: flash_write_interval`), so a cancel shortly before a power cut is not undone.
+- On the first valid temperature reading after boot, the firmware decides once:
+  - Was **waiting** with delay left: resumes the delay countdown (state 1).
+  - Otherwise, if the program heats: **re-preheats** (state 2), since the oven cooled during the outage. A program that was already **cooking** continues straight to cooking after the preheat; one that was preheating or ready goes through READY as usual.
+  - Fan-only programs resume cooking directly (state 4).
+  - Nothing to resume: leftover active temperature/elements/timers are cleared.
+
+### Temperature fault
+
+The 1 s loop watches the MAX31865. The sensor filter drops faulted or implausible readings, so a dead RTD shows up as *no new value*:
+
+- A reading older than **5 s** makes the oven temperature unknown (`NAN`, shown as `--°C`).
+- After the 12 s startup, an unknown temperature (**SENSOR FAULT**) or a reading above `overtemp_limit` (default **310 °C**, **OVER TEMP**) latches `sensor_fault`: the program is cancelled, heating is disabled, the finish buzzer sounds and the screen shows the fault.
+- Press any knob to clear it; it only clears once the sensor reads valid again and at least 20 °C below the limit.
+- Exposed to HA as the `Temperature Fault` binary sensor. Apply Program is refused while faulted or while the temperature is unknown.
+
+### Maximum program time
+
+Any program is cancelled (with the finish buzzer) after **8 hours** in preheat/ready/cook (`max_program_seconds`), whatever the timer or probe says. This bounds "NO TIMER" cooks, probe cooks whose probe stopped reading, and an unattended READY state.
 
 ---
 
@@ -364,7 +380,7 @@ There is no dedicated detect pin — detection is "did we get a believable readi
 The cook mode is **selected automatically from probe presence** — there is no manual toggle:
 
 - **Timer mode** (`cook_mode = 0`): active whenever no probe is connected. Cooking counts down the duration and auto-stops at 0. Behaves exactly as before.
-- **Probe mode** (`cook_mode = 1`): active whenever a probe is connected. Cooking ignores the duration and auto-stops (with the finish buzzer) when the food reaches `food_target_temperature`.
+- **Probe mode** (`cook_mode = 1`): active whenever a probe is connected. Cooking ignores the duration and auto-stops (with the finish buzzer) once the food has read at or above `food_target_temperature` for **5 s** (so a single noisy ADC sample can't end the cook). If the probe stops reading mid-cook, the screen shows **NO PROBE** (no beep: food below ~15 °C reads the same as unplugged); cooking continues until the probe reads again or the 8 h cap.
 
 The mode is derived every second while the oven is idle and then **latched** when a program starts, so unplugging the probe mid-cook cannot switch modes underneath a running program. In Home Assistant, `Cook Mode` is now read-only and just reflects the current mode; `Food Target Temperature` stays editable.
 
