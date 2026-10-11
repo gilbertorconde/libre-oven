@@ -108,6 +108,8 @@ entities:
   cook_mode: number.libre_oven_cook_mode
   # Child lock (optional)
   kids_lock: switch.libre_oven_kids_lock
+  # Temperature fault (optional)
+  temperature_fault: binary_sensor.libre_oven_temperature_fault
 ```
 
 If your device name differs from `libre_oven`, use `base_name: your_device_name` or update the entity IDs in the explicit config.
@@ -129,6 +131,9 @@ Mirrors the physical oven display:
   - Preheating: red (#e01e00)
   - Ready: green (#4caf50)
   - Cooking: green (#4caf50)
+  - Fault: red (#f44336), with a banner explaining heating is disabled
+  - Offline: gray, with a banner; Start and Stop are disabled while the oven is unreachable
+- Failed actions (e.g. the oven went offline) show a Home Assistant notification instead of failing silently.
 - **Current oven temperature**
 - **Target temperature** (active when program running, draft when idle)
 - **Oven graphic** with SVG element visualization:
@@ -144,11 +149,11 @@ Four tiles in a 2×2 grid, each opening a bottom-sheet for editing:
 - **Timer tile**: Cook remaining countdown during COOKING, "Preheating"/"Oven ready" during those states, set cook total when WAITING. Shows the applied set value beneath.
 - **Start Delay tile**: Delay remaining countdown during WAITING, "Done" once delay has passed. Shows the applied set value beneath.
 - **Elements tile**: Active element summary (Top + Bottom + Grill + Fan).
-- **Temperature tile**: Current temperature, set temperature, and food probe temperature (when connected) side by side.
+- **Temperature tile**: Current temperature, set temperature, and food probe temperature (when connected) side by side. Tap **Current** to open Home Assistant's history graph for the oven temperature; tap elsewhere on the tile to set the temperature.
 
 Controls in the sheets:
 - **Temperature**: draggable arc thermostat with +/− 5°C buttons
-- **Cook duration**: +/−1 and +/−10 minute buttons with numeric input; cook mode toggle (Timer / Probe) and food target temperature when probe is connected
+- **Cook duration**: +/−1 and +/−10 minute buttons with numeric input. In probe mode it shows the food target temperature instead. The mode is shown, not chosen: the oven picks it from probe presence.
 - **Start delay**: +/−1 and +/−10 minute buttons with numeric input
 - **Element toggles**: Top, Bottom, Grill, Fan pill buttons
 
@@ -213,13 +218,19 @@ The card reads the `timer_state_code` sensor (numeric) for logic and the `timer_
 | `food_probe_temperature` | sensor        | Current food probe temperature (NTC 100K)      |
 | `food_probe_connected`   | binary_sensor | Whether the food probe jack is plugged in       |
 | `food_target_temperature`| number        | Target food temperature for probe-mode auto-stop|
-| `cook_mode`              | number        | 0 = timer mode, 1 = probe mode                 |
+| `cook_mode`              | number        | 0 = timer mode, 1 = probe mode (read-only, set by the oven) |
 
 ### Optional child lock entity
 
 | Entity Key  | Type   | Description                                          |
 |-------------|--------|------------------------------------------------------|
 | `kids_lock` | switch | Locks/unlocks the oven's physical knobs (HA stays usable) |
+
+### Optional temperature fault entity
+
+| Entity Key          | Type          | Description                                              |
+|---------------------|---------------|----------------------------------------------------------|
+| `temperature_fault` | binary_sensor | Oven sensor fault: the card shows a red **Fault** chip and banner, and disables Start |
 
 ### Optional state sensors (for visual element feedback)
 

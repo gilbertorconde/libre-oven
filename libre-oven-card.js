@@ -1,5 +1,5 @@
 // =============================================================================
-// Libre Oven Card  v2.3.0
+// Libre Oven Card  v2.4.0
 // Inspired by the Midea AC Card architecture.
 //
 // Place this file in:  /config/www/libre-oven/libre-oven-card.js
@@ -67,7 +67,26 @@ const ENTITY_TEMPLATES = {
   food_target_temperature: 'number.{base}_food_target_temperature',
   cook_mode: 'number.{base}_cook_mode',
   kids_lock: 'switch.{base}_kids_lock',
+  temperature_fault: 'binary_sensor.{base}_temperature_fault',
 };
+
+const FAULT_COLOR = '#f44336';
+const OFFLINE_COLOR = '#757575';
+
+// Share Tech Mono is loaded into the document, not the shadow root: fonts
+// declared inside a shadow root's styles are ignored by Chromium.
+const FONT_URL = 'https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap';
+function loadFont() {
+  if (document.querySelector(`link[href="${FONT_URL}"]`)) return;
+  const link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = FONT_URL;
+  document.head.appendChild(link);
+}
+
+function esc(v) {
+  return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
 
 // ── SVG arc helpers (from AC card) ───────────────────────────────────────────
 
@@ -103,12 +122,15 @@ class LibreOvenCard extends HTMLElement {
     this._sheet = null;
     this._dragging = false;
     this._dragTemp = null;
-    this._optimisticCookMode = null;
     this._durationTimer = null;
     this._delayTimer = null;
     this._foodTargetTimer = null;
     this._elemOptimistic = {};
     this._elemTimers = {};
+    // Number values sent to HA but not yet reflected in its state:
+    // entity_id -> { value, timer }. Keeps re-renders from snapping back.
+    this._numPending = {};
+    this._lastHtml = new Map();
     this._prevTimerStateCode = 0;
     this._lastProgramStartAt = 0;
   }
@@ -157,19 +179,20 @@ class LibreOvenCard extends HTMLElement {
       }
     }
 
-    // Reconcile optimistic cook mode
-    if (this._optimisticCookMode !== null) {
-      const e = this._config.entities;
-      const realMode = Number.parseFloat(hass.states[e.cook_mode]?.state ?? '-1');
-      if (realMode === this._optimisticCookMode) {
-        this._optimisticCookMode = null;
+    // Reconcile pending number values with real HA state
+    for (const [eid, p] of Object.entries(this._numPending)) {
+      const real = Number.parseFloat(hass.states[eid]?.state);
+      if (Number.isFinite(real) && Math.abs(real - p.value) < 0.01) {
+        clearTimeout(p.timer);
+        delete this._numPending[eid];
       }
     }
 
     const e = this._config.entities;
     const ids = Object.values(e).filter(Boolean);
 
-    if (this._dragging || this._sheet) return;
+    // An open sheet keeps updating (see _render); only a dial drag pauses renders.
+    if (this._dragging) return;
     if (prev && this._built && ids.every(id => prev.states[id] === hass.states[id])) return;
 
     if (!this._built) this._initShadow();
@@ -188,28 +211,67 @@ class LibreOvenCard extends HTMLElement {
     clearTimeout(this._delayTimer);
     clearTimeout(this._foodTargetTimer);
     for (const t of Object.values(this._elemTimers)) clearTimeout(t);
+    for (const p of Object.values(this._numPending)) clearTimeout(p.timer);
   }
 
   _initShadow() {
+    loadFont();
     this.attachShadow({ mode: 'open' });
+    // The skeleton is built once; _render() only patches the parts that change,
+    // so animations (fan, draft hint) and open sheets aren't reset every second.
+    this.shadowRoot.innerHTML = `<style>${this._css()}</style>${this._skeleton()}`;
     this.shadowRoot.addEventListener('click', e => this._onClick(e));
     this.shadowRoot.addEventListener('input', e => this._onInput(e));
     this.shadowRoot.addEventListener('change', e => this._onChange(e));
     this._built = true;
   }
 
-  // ── Full re-render ─────────────────────────────────────────────────────────
+  // ── Render (patches the static skeleton) ──────────────────────────────────
   _render() {
     if (!this._hass || !this._built) return;
-    const activeSheet = this._sheet;
-    this.shadowRoot.innerHTML = `<style>${this._css()}</style>${this._html()}`;
-    if (activeSheet) {
-      this._openSheet(activeSheet);
-      if (activeSheet === 'temperature') {
-        const dialSvg = this.shadowRoot.querySelector('.dial-svg');
+    const s = this._readState();
+    const root = this.shadowRoot;
+
+    const card = root.querySelector('.card');
+    card.style.setProperty('--mode-color', s.mc);
+    card.style.setProperty('--chip-bg', hexA(s.mc, 0.15));
+    root.getElementById('title').textContent = this._config.title || 'Libre Oven';
+
+    this._setHtml(root.getElementById('header-right'), this._headerHtml(s));
+    const bannerHtml = this._bannerHtml(s);
+    const banner = root.getElementById('banner');
+    this._setHtml(banner, bannerHtml);
+    banner.hidden = !bannerHtml;
+    this._updateOvenSvg(s);
+    this._setHtml(root.getElementById('tiles'), this._tilesHtml(s));
+    root.getElementById('hint').hidden = !s.anyDraftChange;
+    this._setHtml(root.getElementById('actions'), this._actionsHtml(s));
+
+    // Sheets render into persistent containers, so an open sheet stays open and
+    // keeps showing live values. Skip a sheet while its number input is being
+    // typed in (a re-render would wipe the edit).
+    const focused = root.activeElement;
+    for (const name of ['timer', 'delay', 'elements', 'temperature']) {
+      const el = root.querySelector(`.sheet[data-sheet="${name}"]`);
+      if (focused && focused.tagName === 'INPUT' && el.contains(focused)) continue;
+      if (this._setHtml(el, this._sheetHtml(name, s)) && name === 'temperature') {
+        const dialSvg = el.querySelector('.dial-svg');
         if (dialSvg) this._bindDialEvents(dialSvg);
       }
     }
+  }
+
+  // Replace an element's HTML only when it changed. Returns true if replaced.
+  _setHtml(el, html) {
+    if (!el || this._lastHtml.get(el) === html) return false;
+    el.innerHTML = html;
+    this._lastHtml.set(el, html);
+    return true;
+  }
+
+  _setClass(id, cls) {
+    const el = this.shadowRoot.getElementById(id);
+    if (el && el.getAttribute('class') !== cls) el.setAttribute('class', cls);
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
@@ -243,7 +305,34 @@ class LibreOvenCard extends HTMLElement {
   }
 
   _call(domain, service, data) {
-    this._hass.callService(domain, service, data);
+    // Surface failures (e.g. the oven is offline) instead of failing silently.
+    Promise.resolve(this._hass.callService(domain, service, data)).catch(err => {
+      this._toast(`Libre Oven: ${err?.message || 'action failed'}`);
+    });
+  }
+
+  _toast(message) {
+    this.dispatchEvent(new CustomEvent('hass-notification', {
+      detail: { message }, bubbles: true, composed: true,
+    }));
+  }
+
+  // Set a number entity, remembering the value until HA reflects it (max 3s)
+  // so re-renders in between don't snap the control back to the old value.
+  _setNumber(entityId, value) {
+    if (!entityId) return;
+    clearTimeout(this._numPending[entityId]?.timer);
+    const timer = setTimeout(() => {
+      delete this._numPending[entityId];
+      this._render();
+    }, 3000);
+    this._numPending[entityId] = { value, timer };
+    this._call('number', 'set_value', { entity_id: entityId, value });
+  }
+
+  _num(entityId, fallback = 0) {
+    if (entityId && entityId in this._numPending) return this._numPending[entityId].value;
+    return this._asNumber(this._getState(entityId, String(fallback)), fallback);
   }
 
   // ── Optimistic element check ──────────────────────────────────────────────
@@ -277,10 +366,15 @@ class LibreOvenCard extends HTMLElement {
 
     const ovenTemp = n(gs(e.oven_temperature, 'nan'), NaN);
     const activeTemp = n(gs(e.active_temperature, '0'), 0);
-    const draftTemp = n(gs(e.set_temperature, '0'), 0);
-    const cookDuration = n(gs(e.cook_duration, '0'), 0);
-    const startDelay = n(gs(e.start_delay, '0'), 0);
-    const timerStateCode = n(gs(e.timer_state_code, '0'), 0);
+    const draftTemp = this._num(e.set_temperature, 0);
+    const cookDuration = this._num(e.cook_duration, 0);
+    const startDelay = this._num(e.start_delay, 0);
+    // Offline: the device's entities are unavailable (power loss, Wi-Fi).
+    // Without this, unavailable parses as state 0 and the card shows "Idle".
+    const timerStateRaw = gs(e.timer_state_code, 'unavailable');
+    const offline = timerStateRaw === 'unavailable';
+    const timerStateCode = offline ? 0 : n(timerStateRaw, 0);
+    const fault = !offline && gs(e.temperature_fault, 'off') === 'on';
     const activeCountdownRaw = gs(e.active_countdown, '');
     const activeCountdown = activeCountdownRaw && activeCountdownRaw !== 'unknown' && activeCountdownRaw !== 'unavailable'
       ? String(activeCountdownRaw) : '';
@@ -301,8 +395,10 @@ class LibreOvenCard extends HTMLElement {
     const anyHeating = topOn || bottomOn || grillOn;
     const programActive = timerStateCode !== 0;
 
-    const mc = STATE_COLORS[timerStateCode] || '#757575';
-    const stateLabel = STATE_LABELS[timerStateCode] || 'Idle';
+    let mc = STATE_COLORS[timerStateCode] || '#757575';
+    let stateLabel = STATE_LABELS[timerStateCode] || 'Idle';
+    if (offline) { mc = OFFLINE_COLOR; stateLabel = 'Offline'; }
+    else if (fault) { mc = FAULT_COLOR; stateLabel = 'Fault'; }
 
     const STATE_CLASSES = ['off', 'selected', 'armed-heat', 'active-heat'];
     const AUX_CLASSES = ['off', 'selected', 'active-aux'];
@@ -441,10 +537,12 @@ class LibreOvenCard extends HTMLElement {
       topChanged, bottomChanged, grillChanged, fanChanged,
       topActiveInProgram, bottomActiveInProgram, grillActiveInProgram, fanActiveInProgram,
       anyDraftChange,
+      offline, fault,
       foodTemp: n(gs(e.food_probe_temperature, 'nan'), NaN),
       foodProbeConnected: gs(e.food_probe_connected, 'off') === 'on',
-      foodTarget: n(gs(e.food_target_temperature, '0'), 0),
-      cookMode: this._optimisticCookMode !== null ? this._optimisticCookMode : n(gs(e.cook_mode, '0'), 0),
+      foodTarget: this._num(e.food_target_temperature, 0),
+      // Read-only: the firmware picks the mode from probe presence
+      cookMode: n(gs(e.cook_mode, '0'), 0),
       kidsLock: gs(e.kids_lock, 'off') === 'on',
     };
   }
@@ -452,7 +550,6 @@ class LibreOvenCard extends HTMLElement {
   // ── CSS ────────────────────────────────────────────────────────────────────
   _css() {
     return `
-@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
 :host { display: block; }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -461,6 +558,9 @@ class LibreOvenCard extends HTMLElement {
   border-radius: var(--ha-card-border-radius, 12px);
   box-shadow: var(--ha-card-box-shadow, 0 2px 8px rgba(0,0,0,.12));
   overflow: hidden;
+  /* clip, unlike hidden, can't be scrolled: focusing an input in a sheet that
+     is still sliding in would otherwise scroll the card's content up */
+  overflow: clip;
   position: relative;
   color: var(--primary-text-color);
   font-family: var(--primary-font-family, Roboto, sans-serif);
@@ -556,6 +656,24 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
   to   { transform: rotate(360deg); }
 }
 
+/* ── Offline / fault banner ── */
+.banner {
+  margin: 4px 16px 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  color: var(--mode-color);
+  background: var(--chip-bg);
+}
+.mode-note {
+  text-align: center;
+  font-size: 12px;
+  color: var(--secondary-text-color);
+  margin: -8px 0 14px;
+}
+
 /* ── Divider ── */
 .sep { height: 1px; background: var(--divider-color, rgba(255,255,255,.08)); margin: 0 18px; }
 
@@ -629,6 +747,8 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
   line-height: 1;
 }
 .temp-current { color: #ff8566; }
+.temp-col-link { cursor: pointer; }
+.temp-col-link:hover .temp-col-lbl { text-decoration: underline; }
 .temp-set { color: var(--primary-text-color); }
 .temp-food { color: #4caf50; }
 
@@ -928,28 +1048,114 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
   }
 
   // ── HTML ───────────────────────────────────────────────────────────────────
-  _html() {
-    const s = this._readState();
-    const e = this._config.entities;
-    const mc = s.mc;
-    const chipBg = hexA(mc, 0.15);
 
+  // Static structure, built once. Dynamic parts are filled by _render().
+  _skeleton() {
+    return `
+<div class="card">
+
+  <!-- Header -->
+  <div class="header">
+    <span class="name" id="title"></span>
+    <div class="header-right" id="header-right"></div>
+  </div>
+
+  <div class="banner" id="banner" hidden></div>
+
+  <!-- Oven SVG -->
+  <div class="oven-section">
+    <svg class="oven-svg" width="172" height="197" aria-label="Oven status" viewBox="-2 -2 173 200" xmlns="http://www.w3.org/2000/svg">
+      <g id="status-icon" class="status-icon idle"></g>
+      <rect id="oven-frame" class="oven-frame off" x="0" y="42.431" width="170.1" height="154.14" rx="30.828" ry="30.828"/>
+      <path id="el-top" class="el off" d="m147.83 57.553h-125.55"/>
+      <path id="el-bottom" class="el off" d="m147.83 182.11h-125.55"/>
+      <path id="el-grill" class="grill-indicator off" d="m21.076 68.267 8.0048 13.865 7.9678-13.809 8.0322 13.809 7.9678-13.809 8.0322 13.809 7.9678-13.809 8.0322 13.809 7.9678-13.809 8.0322 13.809 7.9698-13.809 8.0342 13.809 7.9678-13.809 8.0322 13.809 7.9678-13.809 8.0322 13.809 7.9405-13.753"/>
+      <g id="fan-group" class="fan-group off">
+        <path id="fan-shape" class="fan-shape off" d="m85.048 127.44a3.7055 3.7055 0 1 0 3.7055 3.7055 3.7055 3.7055 0 0 0-3.7055-3.7055m1.8527-33.349c16.675 0 17.045 13.229 8.2633 17.601a12.45 12.45 0 0 0-6.0029 9.1526 11.746 11.746 0 0 1 4.5578 3.372c13.562-7.411 28.384-4.4836 28.384 8.782 0 16.675-13.266 17.045-17.601 8.2632a12.747 12.747 0 0 0-9.2637-6.0029 12.006 12.006 0 0 1-3.372 4.5578c7.411 13.673 4.4466 28.384-8.8191 28.384-16.527 0-16.934-13.266-8.1521-17.638a12.821 12.821 0 0 0 6.0029-9.0785 11.116 11.116 0 0 1-4.6319-3.4091c-13.673 7.3369-28.273 4.4466-28.273-8.782 0-16.675 13.117-17.082 17.49-8.3003a12.562 12.562 0 0 0 9.1896 5.9658 10.783 10.783 0 0 1 3.409-4.5207c-7.3739-13.525-4.4466-28.347 8.745-28.347z"/>
+      </g>
+      <g id="bulb" class="bulb-icon off">
+        <circle cx="157.92" cy="9.5" r="9.5"/>
+        <rect x="152.92" y="20.5" width="10" height="5" rx="1" ry="1"/>
+        <line x1="153.92" x2="161.92" y1="27" y2="27" stroke-linecap="round" stroke-width="2.5"/>
+      </g>
+    </svg>
+  </div>
+
+  <div class="sep"></div>
+
+  <!-- Tiles -->
+  <div class="tiles" id="tiles"></div>
+
+  <div class="update-hint" id="hint" hidden>DRAFT CHANGES — Press Update to apply</div>
+
+  <!-- Actions -->
+  <div class="actions" id="actions"></div>
+
+  <!-- Overlay -->
+  <div class="overlay" id="overlay"></div>
+
+  <!-- Sheets (contents rendered by _sheetHtml) -->
+  <div class="sheet" data-sheet="timer"></div>
+  <div class="sheet" data-sheet="delay"></div>
+  <div class="sheet" data-sheet="elements"></div>
+  <div class="sheet" data-sheet="temperature"></div>
+
+</div>`;
+  }
+
+  _headerHtml(s) {
+    const e = this._config.entities;
+    return `
+      ${e.kids_lock ? `<button class="lock-btn${s.kidsLock ? ' locked' : ''}" data-action="toggle-kids-lock"
+          title="${s.kidsLock ? 'Child lock on - tap to unlock' : 'Child lock off - tap to lock'}"
+          aria-label="Toggle child lock">
+        <svg viewBox="0 0 24 24" width="18" height="18">${s.kidsLock
+          ? '<path d="M12 17a2 2 0 0 0 2-2 2 2 0 0 0-2-2 2 2 0 0 0-2 2 2 2 0 0 0 2 2m6-9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h1V6a5 5 0 0 1 5-5 5 5 0 0 1 5 5v2zm-6-5a3 3 0 0 0-3 3v2h6V6a3 3 0 0 0-3-3z"/>'
+          : '<path d="M12 17a2 2 0 0 0 2-2 2 2 0 0 0-2-2 2 2 0 0 0-2 2 2 2 0 0 0 2 2m6-9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h9V6a3 3 0 0 0-6 0H7a5 5 0 0 1 10 0v2z"/>'}</svg>
+      </button>` : ''}
+      <span class="chip"><span class="chip-dot"></span>${s.stateLabel}</span>`;
+  }
+
+  _bannerHtml(s) {
+    if (s.offline) return 'Oven offline — controls are unavailable';
+    if (s.fault) return 'Temperature fault — heating disabled. Check the oven sensor, then press a knob on the oven to clear it.';
+    return '';
+  }
+
+  _updateOvenSvg(s) {
+    const icon = this.shadowRoot.getElementById('status-icon');
+    icon.setAttribute('class', `status-icon ${s.programActive ? 'active' : 'idle'}`);
+    this._setHtml(icon, s.programActive
+      ? '<path d="m132.61 13.479-21.345 12.324v-24.647z"/>'
+      : '<rect x="112.92" y="1.5" width="6" height="24" rx="1" ry="1"/><rect x="123.92" y="1.5" width="6" height="24" rx="1" ry="1"/>');
+    this._setClass('oven-frame', `oven-frame ${s.frameState}`);
+    this._setClass('el-top', `el ${s.topState}`);
+    this._setClass('el-bottom', `el ${s.bottomState}`);
+    this._setClass('el-grill', `grill-indicator ${s.grillState}`);
+    this._setClass('fan-group', `fan-group ${s.fanState}`);
+    this._setClass('fan-shape', `fan-shape ${s.fanState}`);
+    this._setClass('bulb', `bulb-icon ${s.frameState}`);
+  }
+
+  _tilesHtml(s) {
     // Current temp display
     const curTemp = Number.isFinite(s.ovenTemp) ? Math.round(s.ovenTemp) + '°C' : '--';
     const setTemp = Math.round(Math.max(0, s.draftTemp)) + '°C';
 
     // Timer tile
-    let timerTileVal = s.mainTimer;
+    let timerTileVal = esc(s.mainTimer);
     const timerTileActive = s.programActive;
     const timerSetInfo = s.timerSetLabel;
 
-    // Probe mode: override timer display during cooking
+    // Probe mode: override timer display during cooking. Keyed on the
+    // (latched) cook mode, not probe presence, so a probe that stops reading
+    // mid-cook shows as such instead of falling back to the timer view.
     let probeDisplayHtml = '';
-    if (s.foodProbeConnected && s.cookMode === 1 && s.programActive && s.timerStateCode === 4) {
+    if (s.cookMode === 1 && s.timerStateCode === 4) {
       const foodStr = Number.isFinite(s.foodTemp) ? Math.round(s.foodTemp) + '°C' : '--';
       const targetStr = s.foodTarget > 0 ? Math.round(s.foodTarget) + '°C' : '--';
       timerTileVal = `${foodStr} → ${targetStr}`;
-      probeDisplayHtml = '<span class="tile-lbl" style="margin-top:2px">Probe mode</span>';
+      probeDisplayHtml = `<span class="tile-lbl" style="margin-top:2px">${Number.isFinite(s.foodTemp) ? 'Probe mode' : 'Probe: no reading'}</span>`;
     }
 
     // Delay tile
@@ -1005,68 +1211,7 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
       ? `<div class="draft-change-row elem-list">${elemParts.join(' ')}</div>`
       : '';
 
-    // Arc thermostat values (for sheet)
-    const target = this._dragging && this._dragTemp != null ? this._dragTemp : Math.round(s.draftTemp);
-    const frac = Math.max(0, Math.min(1, (target - MIN_TEMP) / (MAX_TEMP - MIN_TEMP)));
-    const CX = 100, CY = 90, R = 76;
-    const ARC_START = 240, ARC_SWEEP = 240;
-    const trackPath = arcD(CX, CY, R, ARC_START, ARC_SWEEP);
-    const fillSweep = frac * ARC_SWEEP;
-    const fillPath = arcD(CX, CY, R, ARC_START, fillSweep);
-    const [hx, hy] = pt(CX, CY, R, ARC_START + (fillSweep < 0.5 ? 0 : fillSweep));
-
-    // Button states
-    const inReady = s.timerStateCode === 3;
-    const canStart = !s.programActive && (s.topOn || s.bottomOn || s.grillOn || s.fanOn);
-    const startClass = inReady ? 'start-active' : (s.programActive ? 'start-running' : (canStart ? 'start-active' : 'start-disabled'));
-    const startLabel = inReady ? '▶ Start Cooking' : (s.programActive ? '↻ Update' : '▶ Start');
-    const stopClass = s.programActive ? 'stop-active' : 'stop-idle';
-
     return `
-<div class="card" style="--mode-color:${mc};--chip-bg:${chipBg}">
-
-  <!-- Header -->
-  <div class="header">
-    <span class="name">${this._config.title || 'Libre Oven'}</span>
-    <div class="header-right">
-      ${e.kids_lock ? `<button class="lock-btn${s.kidsLock ? ' locked' : ''}" data-action="toggle-kids-lock"
-          title="${s.kidsLock ? 'Child lock on - tap to unlock' : 'Child lock off - tap to lock'}"
-          aria-label="Toggle child lock">
-        <svg viewBox="0 0 24 24" width="18" height="18">${s.kidsLock
-          ? '<path d="M12 17a2 2 0 0 0 2-2 2 2 0 0 0-2-2 2 2 0 0 0-2 2 2 2 0 0 0 2 2m6-9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h1V6a5 5 0 0 1 5-5 5 5 0 0 1 5 5v2zm-6-5a3 3 0 0 0-3 3v2h6V6a3 3 0 0 0-3-3z"/>'
-          : '<path d="M12 17a2 2 0 0 0 2-2 2 2 0 0 0-2-2 2 2 0 0 0-2 2 2 2 0 0 0 2 2m6-9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h9V6a3 3 0 0 0-6 0H7a5 5 0 0 1 10 0v2z"/>'}</svg>
-      </button>` : ''}
-      <span class="chip"><span class="chip-dot"></span>${s.stateLabel}</span>
-    </div>
-  </div>
-
-  <!-- Oven SVG -->
-  <div class="oven-section">
-    <svg class="oven-svg" width="172" height="197" aria-label="Oven status" viewBox="-2 -2 173 200" xmlns="http://www.w3.org/2000/svg">
-      <g class="status-icon ${s.programActive ? 'active' : 'idle'}">
-        ${s.programActive
-          ? '<path d="m132.61 13.479-21.345 12.324v-24.647z"/>'
-          : '<rect x="112.92" y="1.5" width="6" height="24" rx="1" ry="1"/><rect x="123.92" y="1.5" width="6" height="24" rx="1" ry="1"/>'}
-      </g>
-      <rect class="oven-frame ${s.frameState}" x="0" y="42.431" width="170.1" height="154.14" rx="30.828" ry="30.828"/>
-      <path class="el ${s.topState}" d="m147.83 57.553h-125.55"/>
-      <path class="el ${s.bottomState}" d="m147.83 182.11h-125.55"/>
-      <path class="grill-indicator ${s.grillState}" d="m21.076 68.267 8.0048 13.865 7.9678-13.809 8.0322 13.809 7.9678-13.809 8.0322 13.809 7.9678-13.809 8.0322 13.809 7.9678-13.809 8.0322 13.809 7.9698-13.809 8.0342 13.809 7.9678-13.809 8.0322 13.809 7.9678-13.809 8.0322 13.809 7.9405-13.753"/>
-      <g class="fan-group ${s.fanState}">
-        <path class="fan-shape ${s.fanState}" d="m85.048 127.44a3.7055 3.7055 0 1 0 3.7055 3.7055 3.7055 3.7055 0 0 0-3.7055-3.7055m1.8527-33.349c16.675 0 17.045 13.229 8.2633 17.601a12.45 12.45 0 0 0-6.0029 9.1526 11.746 11.746 0 0 1 4.5578 3.372c13.562-7.411 28.384-4.4836 28.384 8.782 0 16.675-13.266 17.045-17.601 8.2632a12.747 12.747 0 0 0-9.2637-6.0029 12.006 12.006 0 0 1-3.372 4.5578c7.411 13.673 4.4466 28.384-8.8191 28.384-16.527 0-16.934-13.266-8.1521-17.638a12.821 12.821 0 0 0 6.0029-9.0785 11.116 11.116 0 0 1-4.6319-3.4091c-13.673 7.3369-28.273 4.4466-28.273-8.782 0-16.675 13.117-17.082 17.49-8.3003a12.562 12.562 0 0 0 9.1896 5.9658 10.783 10.783 0 0 1 3.409-4.5207c-7.3739-13.525-4.4466-28.347 8.745-28.347z"/>
-      </g>
-      <g class="bulb-icon ${s.frameState}">
-        <circle cx="157.92" cy="9.5" r="9.5"/>
-        <rect x="152.92" y="20.5" width="10" height="5" rx="1" ry="1"/>
-        <line x1="153.92" x2="161.92" y1="27" y2="27" stroke-linecap="round" stroke-width="2.5"/>
-      </g>
-    </svg>
-  </div>
-
-  <div class="sep"></div>
-
-  <!-- Tiles -->
-  <div class="tiles">
     <div class="tile${timerTileActive ? ' active' : ''}" data-action="open-timer">
       <span class="tile-lbl">Timer</span>
       <span class="tile-val">${timerTileVal}</span>
@@ -1077,7 +1222,7 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
     </div>
     <div class="tile${delayTileActive ? ' active' : ''}" data-action="open-delay">
       <span class="tile-lbl">Start Delay</span>
-      <span class="tile-val">${delayTileVal}</span>
+      <span class="tile-val">${esc(delayTileVal)}</span>
       ${delaySetInfo ? `<span class="tile-lbl" style="margin-top:2px">Set: ${delaySetInfo}</span>` : ''}
       ${delayDraftHtml}
     </div>
@@ -1088,7 +1233,7 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
     </div>
     <div class="tile" data-action="open-temperature">
       <div class="temp-tile-inner">
-        <div class="temp-col">
+        <div class="temp-col temp-col-link" data-action="more-info-temp" title="Show temperature history">
           <span class="temp-col-lbl">Current</span>
           <span class="temp-col-val temp-current">${curTemp}</span>
         </div>
@@ -1102,36 +1247,42 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
           <span class="temp-col-val temp-food">${Number.isFinite(s.foodTemp) ? Math.round(s.foodTemp) + '°C' : '--'}</span>
         </div>` : ''}
       </div>
-    </div>
-  </div>
+    </div>`;
+  }
 
-  ${s.anyDraftChange ? '<div class="update-hint">DRAFT CHANGES — Press Update to apply</div>' : ''}
+  _actionsHtml(s) {
+    // Button states. Offline: nothing can be sent. Fault: the oven refuses to
+    // start, and the fault already cancelled any program.
+    const inReady = s.timerStateCode === 3;
+    const canStart = !s.offline && !s.fault && !s.programActive && (s.topOn || s.bottomOn || s.grillOn || s.fanOn);
+    let startClass;
+    if (s.offline || s.fault) startClass = 'start-disabled';
+    else if (inReady) startClass = 'start-active';
+    else if (s.programActive) startClass = 'start-running';
+    else startClass = canStart ? 'start-active' : 'start-disabled';
+    const startLabel = inReady ? '▶ Start Cooking' : (s.programActive ? '↻ Update' : '▶ Start');
+    const stopClass = s.programActive && !s.offline ? 'stop-active' : 'stop-idle';
 
-  <!-- Actions -->
-  <div class="actions">
+    return `
     <button class="action-btn ${startClass}" data-action="start-program">
       ${startLabel}
     </button>
     <button class="action-btn ${stopClass}" data-action="cancel-program">
       ■ Stop
-    </button>
-  </div>
+    </button>`;
+  }
 
-  <!-- Overlay -->
-  <div class="overlay" id="overlay"></div>
-
-  <!-- Timer Sheet (Cook Duration + Cook Mode) -->
-  <div class="sheet" data-sheet="timer">
+  _sheetHtml(name, s) {
+    const e = this._config.entities;
+    if (name === 'timer') {
+      // Cook mode is read-only (the firmware picks it from probe presence and
+      // latches it for the run), so it's shown, not offered as a choice.
+      const probeMode = s.cookMode === 1;
+      return `
     <div class="sheet-handle"></div>
-    <div class="sheet-title">${s.foodProbeConnected ? 'Cook Settings' : 'Cook Duration'}</div>
-    ${s.foodProbeConnected ? `
-    <div class="sheet-sec">Cook Mode</div>
-    <div class="pill-row">
-      <button class="pill mode-pill${s.cookMode === 0 ? ' active' : ''}" data-action="set-cook-mode-timer">Timer</button>
-      <button class="pill mode-pill${s.cookMode === 1 ? ' active' : ''}" data-action="set-cook-mode-probe">Probe</button>
-    </div>
-    ` : ''}
-    ${!s.foodProbeConnected || s.cookMode === 0 ? `
+    <div class="sheet-title">${probeMode ? 'Cook Settings' : 'Cook Duration'}</div>
+    ${probeMode ? '<div class="mode-note">Probe mode — set automatically while a probe is plugged in</div>' : ''}
+    ${!probeMode ? `
     <div class="sheet-sec">Duration</div>
     <div class="num-control">
       <div class="num-field" style="width:100%;justify-content:center">
@@ -1160,11 +1311,11 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
     <div class="probe-live" style="text-align:center;margin-top:8px;color:var(--secondary-text-color,#aaa);font-size:13px">
       Food now: ${Number.isFinite(s.foodTemp) ? Math.round(s.foodTemp) + '°C' : '--'}
     </div>
-    `}
-  </div>
+    `}`;
+    }
 
-  <!-- Delay Sheet (Start Delay only) -->
-  <div class="sheet" data-sheet="delay">
+    if (name === 'delay') {
+      return `
     <div class="sheet-handle"></div>
     <div class="sheet-title">Start Delay</div>
     <div class="num-control">
@@ -1177,11 +1328,11 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
         <button class="num-btn" data-action="delay-up">+</button>
         <button class="num-btn num-btn-wide" data-action="delay-up-10">+10</button>
       </div>
-    </div>
-  </div>
+    </div>`;
+    }
 
-  <!-- Elements Sheet -->
-  <div class="sheet" data-sheet="elements">
+    if (name === 'elements') {
+      return `
     <div class="sheet-handle"></div>
     <div class="sheet-title">Active Elements</div>
 
@@ -1193,11 +1344,20 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
     <div class="pill-row">
       <button class="pill${s.grillOn ? ' active' : ''}" data-action="toggle-grill">Grill</button>
       <button class="pill${s.fanOn ? ' active' : ''}" data-action="toggle-fan">Fan</button>
-    </div>
-  </div>
+    </div>`;
+    }
 
-  <!-- Temperature Sheet (Arc Thermostat) -->
-  <div class="sheet" data-sheet="temperature">
+    // Temperature: arc thermostat
+    const mc = s.mc;
+    const target = Math.round(s.draftTemp);
+    const frac = Math.max(0, Math.min(1, (target - MIN_TEMP) / (MAX_TEMP - MIN_TEMP)));
+    const CX = 100, CY = 90, R = 76;
+    const ARC_START = 240, ARC_SWEEP = 240;
+    const trackPath = arcD(CX, CY, R, ARC_START, ARC_SWEEP);
+    const fillSweep = frac * ARC_SWEEP;
+    const fillPath = arcD(CX, CY, R, ARC_START, fillSweep);
+    const [hx, hy] = pt(CX, CY, R, ARC_START + (fillSweep < 0.5 ? 0 : fillSweep));
+    return `
     <div class="sheet-handle"></div>
     <div class="sheet-title" style="margin-bottom:8px">Set Temperature</div>
 
@@ -1213,17 +1373,14 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
                   fill="white" stroke="${mc}" stroke-width="2.5"/>
         </svg>
         <div class="dial-center">
-          <button class="dial-btn" data-action="temp-down">\u2212</button>
+          <button class="dial-btn" data-action="temp-down">−</button>
           <div class="dial-temp">
-            <span class="dial-val" id="arc-temp-val">${target}</span><span class="dial-unit">\u00B0C</span>
+            <span class="dial-val" id="arc-temp-val">${target}</span><span class="dial-unit">°C</span>
           </div>
           <button class="dial-btn" data-action="temp-up">+</button>
         </div>
       </div>
-    </div>
-  </div>
-
-</div>`;
+    </div>`;
   }
 
   // ── Dial drag ──────────────────────────────────────────────────────────────
@@ -1248,11 +1405,9 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
       this._dragging = false;
       svg.classList.remove('dragging');
       if (this._dragTemp != null) {
-        const eid = this._config.entities.set_temperature;
-        if (eid) {
-          this._call('number', 'set_value', { entity_id: eid, value: this._dragTemp });
-        }
+        this._setNumber(this._config.entities.set_temperature, this._dragTemp);
         this._dragTemp = null;
+        this._render();
       }
     };
     svg.addEventListener('pointerup', endDrag);
@@ -1317,10 +1472,6 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
     const sheetEl = s.querySelector(`.sheet[data-sheet="${name}"]`);
     sheetEl?.classList.add('open');
     s.getElementById('overlay')?.classList.add('open');
-    if (name === 'temperature') {
-      const dialSvg = s.querySelector('.dial-svg');
-      if (dialSvg) this._bindDialEvents(dialSvg);
-    }
     if (sheetEl) {
       requestAnimationFrame(() => {
         setTimeout(() => {
@@ -1341,7 +1492,6 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
     const s = this.shadowRoot;
     s.querySelectorAll('.sheet.open').forEach(el => el.classList.remove('open'));
     s.getElementById('overlay')?.classList.remove('open');
-    setTimeout(() => this._render(), 320);
   }
 
   // ── Click handling ─────────────────────────────────────────────────────────
@@ -1374,6 +1524,15 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
       case 'open-elements':    this._openSheet('elements');    return;
       case 'open-temperature': this._openSheet('temperature'); return;
 
+      // Native HA more-info dialog (history graph) for the oven temperature
+      case 'more-info-temp':
+        if (ent.oven_temperature) {
+          this.dispatchEvent(new CustomEvent('hass-more-info', {
+            detail: { entityId: ent.oven_temperature }, bubbles: true, composed: true,
+          }));
+        }
+        return;
+
       // Temperature arc +/- buttons
       case 'temp-up':
       case 'temp-down': {
@@ -1383,7 +1542,7 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
           ? clamp(Math.ceil((cur + 1) / 5) * 5, MIN_TEMP, MAX_TEMP)
           : clamp(Math.floor((cur - 1) / 5) * 5, MIN_TEMP, MAX_TEMP);
         this._updateDialArc(next);
-        this._call('number', 'set_value', { entity_id: ent.set_temperature, value: next });
+        this._setNumber(ent.set_temperature, next);
         break;
       }
 
@@ -1424,6 +1583,7 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
       // Program actions
       case 'start-program': {
         const s = this._readState();
+        if (s.offline || s.fault) return;
         if (s.timerStateCode === 3 && ent.start_cooking) {
           this._call('button', 'press', { entity_id: ent.start_cooking });
           break;
@@ -1434,22 +1594,10 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
       }
       case 'cancel-program': {
         const s = this._readState();
-        if (!s.programActive) return;
+        if (s.offline || !s.programActive) return;
         if (ent.cancel_program) this._call('button', 'press', { entity_id: ent.cancel_program });
         break;
       }
-
-      // Cook mode
-      case 'set-cook-mode-timer':
-        if (ent.cook_mode) this._call('number', 'set_value', { entity_id: ent.cook_mode, value: 0 });
-        this._optimisticCookMode = 0;
-        this._openSheet('timer');
-        break;
-      case 'set-cook-mode-probe':
-        if (ent.cook_mode) this._call('number', 'set_value', { entity_id: ent.cook_mode, value: 1 });
-        this._optimisticCookMode = 1;
-        this._openSheet('timer');
-        break;
 
       // Food target +/-
       case 'food-target-up':
@@ -1469,7 +1617,7 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
     const cur = Number.parseFloat(input.value) || 0;
     const next = Math.max(min, Math.min(max, Math.round(cur + delta)));
     input.value = String(next);
-    this._call('number', 'set_value', { entity_id: entityId, value: next });
+    this._setNumber(entityId, next);
   }
 
   // ── Input handling (debounced number inputs) ───────────────────────────────
@@ -1486,21 +1634,21 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
       this._durationTimer = setTimeout(() => {
         const v = Math.max(0, Math.min(1439, Math.round(Number.parseFloat(input.value) || 0)));
         input.value = String(v);
-        if (ent.cook_duration) this._call('number', 'set_value', { entity_id: ent.cook_duration, value: v });
+        this._setNumber(ent.cook_duration, v);
       }, 400);
     } else if (id === 'delay-input') {
       clearTimeout(this._delayTimer);
       this._delayTimer = setTimeout(() => {
         const v = Math.max(0, Math.min(1439, Math.round(Number.parseFloat(input.value) || 0)));
         input.value = String(v);
-        if (ent.start_delay) this._call('number', 'set_value', { entity_id: ent.start_delay, value: v });
+        this._setNumber(ent.start_delay, v);
       }, 400);
     } else if (id === 'food-target-input') {
       clearTimeout(this._foodTargetTimer);
       this._foodTargetTimer = setTimeout(() => {
         const v = Math.max(0, Math.min(300, Math.round(Number.parseFloat(input.value) || 0)));
         input.value = String(v);
-        if (ent.food_target_temperature) this._call('number', 'set_value', { entity_id: ent.food_target_temperature, value: v });
+        this._setNumber(ent.food_target_temperature, v);
       }, 400);
     }
   }
@@ -1516,17 +1664,17 @@ path.grill-indicator.active-heat { stroke: #e01e00; }
       clearTimeout(this._durationTimer);
       const v = Math.max(0, Math.min(1439, Math.round(Number.parseFloat(input.value) || 0)));
       input.value = String(v);
-      if (ent.cook_duration) this._call('number', 'set_value', { entity_id: ent.cook_duration, value: v });
+      this._setNumber(ent.cook_duration, v);
     } else if (id === 'delay-input') {
       clearTimeout(this._delayTimer);
       const v = Math.max(0, Math.min(1439, Math.round(Number.parseFloat(input.value) || 0)));
       input.value = String(v);
-      if (ent.start_delay) this._call('number', 'set_value', { entity_id: ent.start_delay, value: v });
+      this._setNumber(ent.start_delay, v);
     } else if (id === 'food-target-input') {
       clearTimeout(this._foodTargetTimer);
       const v = Math.max(0, Math.min(300, Math.round(Number.parseFloat(input.value) || 0)));
       input.value = String(v);
-      if (ent.food_target_temperature) this._call('number', 'set_value', { entity_id: ent.food_target_temperature, value: v });
+      this._setNumber(ent.food_target_temperature, v);
     }
   }
 }
