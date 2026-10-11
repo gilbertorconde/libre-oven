@@ -472,7 +472,7 @@ The following entities are exposed to Home Assistant:
 
 Build and flash through the **ESPHome Dashboard** (Home Assistant add-on or standalone):
 
-1. Create a `secrets.yaml` in this folder with your Wi-Fi and API credentials.
+1. Create a `secrets.yaml` in this folder with your Wi-Fi and API credentials. `ota_password` also protects the web interface (user `admin`, digest auth), which serves the browser firmware upload.
 2. Import `libre_oven_s3.yaml` into the ESPHome Dashboard.
 3. Install to the device via USB (first flash) or OTA (subsequent updates).
 
