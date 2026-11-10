@@ -77,17 +77,18 @@ api:
   encryption:
     key: !secret api_encryption_key
 
-# Enable Over-The-Air updates
+# Enable Over-The-Air updates. `encryption:` with no key reuses the API
+# encryption key above, so OTA images are encrypted, not just authenticated.
 ota:
   - platform: esphome
-    password: !secret ota_password
+    encryption:
   - platform: web_server
 
 # Enable web server for local access
 web_server:
   port: 80
   # Required: the web_server OTA above is otherwise an unauthenticated
-  # firmware upload (the esphome OTA password doesn't cover it).
+  # firmware upload (the esphome OTA encryption doesn't cover it).
   auth:
     type: digest
     username: admin
