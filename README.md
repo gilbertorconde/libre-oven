@@ -313,6 +313,9 @@ The card reads the `timer_state_code` sensor (numeric) for logic and the `timer_
 
 ## Changelog
 
+**3.0.1**
+- Fixed: the convection fan now spins around its hub instead of wobbling.
+
 **3.0.0**
 - New dark, app-style design. All controls are visible at once and the bottom sheets are gone. The layout is two columns when wide and one column on a phone.
 - The oven drawing has a full-size convection fan.

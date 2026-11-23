@@ -1,5 +1,5 @@
 // =============================================================================
-// Libre Oven Card  v3.0.0
+// Libre Oven Card  v3.0.1
 // Dark, app-style control card for the Libre Oven (ESPHome) firmware.
 //
 // Place this file in:  /config/www/libre-oven/libre-oven-card.js
@@ -12,7 +12,7 @@
 // =============================================================================
 
 const CARD_TAG = 'libre-oven-card';
-const CARD_VERSION = '3.0.0';
+const CARD_VERSION = '3.0.1';
 
 const STATE_LABELS = { 0: 'Idle', 1: 'Waiting', 2: 'Preheating', 3: 'Ready', 4: 'Cooking' };
 const STATE_KEYS = { 0: 'idle', 1: 'wait', 2: 'pre', 3: 'ready', 4: 'cook' };
@@ -866,7 +866,7 @@ ha-icon { --mdc-icon-size: 16px; display: inline-flex; }
     <circle r="50" fill="none" stroke="${fc}" stroke-width="2" opacity=".55"/>
     <circle r="40" fill="none" stroke="${fc}" stroke-width="1" opacity=".25"/>
     ${spokes}
-    <g class="${s.fanState === 'active-aux' ? 'fan-spin' : ''}">${blades}<circle r="7" fill="#14171e" stroke="${fc}" stroke-width="2"/></g>
+    <g class="${s.fanState === 'active-aux' ? 'fan-spin' : ''}"><circle r="48" fill="none"/>${blades}<circle r="7" fill="#14171e" stroke="${fc}" stroke-width="2"/></g>
   </g>
   <path d="${z}" fill="none" stroke="${c(s.grillState)}" stroke-width="2.4" stroke-linejoin="round" style="filter:${glow(s.grillState)}"/>
   <line x1="48" y1="38" x2="272" y2="38" stroke="${c(s.topState)}" stroke-width="5" stroke-linecap="round" style="filter:${glow(s.topState)}"/>
