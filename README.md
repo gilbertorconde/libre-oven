@@ -315,6 +315,7 @@ The card reads the `timer_state_code` sensor (numeric) for logic and the `timer_
 
 **3.0.1**
 - Fixed: the convection fan now spins around its hub instead of wobbling.
+- On a narrow card the state badge moves into the subtitle, so the header buttons keep their size and the title keeps its room.
 
 **3.0.0**
 - New dark, app-style design. All controls are visible at once and the bottom sheets are gone. The layout is two columns when wide and one column on a phone.

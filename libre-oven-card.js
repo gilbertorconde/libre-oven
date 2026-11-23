@@ -676,6 +676,10 @@ ha-icon { --mdc-icon-size: 16px; display: inline-flex; }
 .dh .ic { width: 42px; height: 42px; border-radius: 14px; display: grid; place-items: center; background: rgba(255,255,255,.06); color: var(--text2); flex-shrink: 0; }
 .card.hot .dh .ic { color: var(--heat); background: rgba(255,122,69,.14); }
 .dh .tt { min-width: 0; }
+.dh .sb { display: none; font-weight: 600; }
+.sb.st-wait { color: var(--dry); } .sb.st-pre, .sb.st-fault { color: var(--danger); } .sb.st-ready, .sb.st-cook { color: var(--ok); }
+/* Narrow: the state moves into the subtitle so the buttons keep their size and the title keeps its room. */
+@container (max-width: 440px) { .dh .badge { display: none; } .dh .sb { display: inline; } }
 .dh h3 { margin: 0; font-size: 17px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dh p { margin: 1px 0 0; font-size: 12.5px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dh .sp { flex: 1; }
@@ -1086,7 +1090,7 @@ ha-icon { --mdc-icon-size: 16px; display: inline-flex; }
       cls: `card${hot && !s.offline ? ' hot' : ''}${s.offline ? ' offline' : ''}${s.fault ? ' fault' : ''}`,
       regions: {
         'r-head': `<div class="ic">${svgIcon('stove', 22)}</div>
-    <div class="tt"><h3>${esc(cfg.title || 'Libre Oven')}</h3><p>${esc(subtitle)}</p></div>
+    <div class="tt"><h3>${esc(cfg.title || 'Libre Oven')}</h3><p><span class="sb st-${badge.key}">${badge.label} · </span>${esc(subtitle)}</p></div>
     <div class="sp"></div>
     <span class="badge st-${badge.key}"><span class="d"></span>${badge.label}</span>
     ${lockBtn}${closeBtn}`,
