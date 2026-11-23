@@ -118,58 +118,125 @@ If your device name differs from `libre_oven`, use `base_name: your_device_name`
 
 ## Card Layout
 
-The card is divided into three sections:
+Version 3 is a dark, app-style card. Every control is visible at once; there are no bottom sheets.
 
-### Top Section — Live Status (read-only from ESP32)
+- **Wide (700 px and up, e.g. a dialog or a wide column):** two columns. On the left are the oven drawing, the oven and target temperatures, and the food probe. On the right are the controls.
+- **Narrow (a phone):** one column. While a program runs, its timer comes first.
 
-Mirrors the physical oven display:
+### Header
 
-- **Child lock toggle** (header, left of the state label): a padlock icon — muted/open when unlocked, amber/closed when locked. Tap to lock or unlock the physical knobs. Only shown when the `kids_lock` entity is available.
-- **State label** with color coding:
-  - Idle: white
-  - Waiting: yellow (#e5c000)
-  - Preheating: red (#e01e00)
-  - Ready: green (#4caf50)
-  - Cooking: green (#4caf50)
-  - Fault: red (#f44336), with a banner explaining heating is disabled
-  - Offline: gray, with a banner; Start and Stop are disabled while the oven is unreachable
-- Failed actions (e.g. the oven went offline) show a Home Assistant notification instead of failing silently.
-- **Current oven temperature**
-- **Target temperature** (active when program running, draft when idle)
-- **Oven graphic** with SVG element visualization:
-  - Gray: off
-  - White: selected in draft
-  - Yellow: armed/active (program running, SSR cycling)
-  - Red: actively heating (SSR on)
+- Title and a one-line summary (elements and temperature of the running program, or the draft when idle).
+- **State badge**: Idle (grey), Waiting (yellow), Preheating (red), Ready (green), Cooking (green), **Fault** (red), **Offline** (grey).
+- **Child lock**: padlock button, amber when locked. Tap to lock or unlock the physical knobs. Shown only when the `kids_lock` entity exists.
 
-### Middle Section — Tiles & Controls
+### Offline and fault
 
-Four tiles in a 2×2 grid, each opening a bottom-sheet for editing:
+- **Offline** (the oven's entities are unavailable: power loss or Wi-Fi):
+  - a grey banner;
+  - every control is dimmed and disabled;
+  - Start and Cancel can't be pressed.
+- **Fault** (`temperature_fault` is on):
+  - a red banner says heating is blocked and how to clear it (check the sensor, then press a knob on the oven);
+  - Start and Start cooking are disabled;
+  - the draft can still be edited.
 
-- **Timer tile**: Cook remaining countdown during COOKING, "Preheating"/"Oven ready" during those states, set cook total when WAITING. Shows the applied set value beneath.
-- **Start Delay tile**: Delay remaining countdown during WAITING, "Done" once delay has passed. Shows the applied set value beneath.
-- **Elements tile**: Active element summary (Top + Bottom + Grill + Fan).
-- **Temperature tile**: Current temperature, set temperature, and food probe temperature (when connected) side by side. Tap **Current** to see the oven temperature graph: during a program it opens Home Assistant's History page starting at the program's preheat (found from the recorder), otherwise the entity's more-info dialog. Tap elsewhere on the tile to set the temperature.
+Failed actions, for example when the oven drops off the network, show a Home Assistant notification instead of failing silently.
 
-Controls in the sheets:
-- **Temperature**: draggable arc thermostat with +/− 5°C buttons
-- **Cook duration**: +/−1 and +/−10 minute buttons with numeric input. In probe mode it shows the food target temperature instead. The mode is shown, not chosen: the oven picks it from probe presence.
-- **Start delay**: +/−1 and +/−10 minute buttons with numeric input
-- **Element toggles**: Top, Bottom, Grill, Fan pill buttons
+### Oven drawing
 
-### Draft-Change Feedback
+The top and bottom elements, the grill and a full-size convection fan on the back wall:
 
-When a program is running, any change to draft values (temperature, duration, delay, or elements) is shown inline on the tiles:
+- grey: off
+- white: selected in the draft
+- amber: armed or active (program running, SSR cycling); the fan spins while active
+- red with a glow: heating (SSR on)
 
-- **Temperature**: old value with strikethrough → new value in accent color
-- **Timer / Delay**: old set time with strikethrough → new time in accent color
-- **Elements**: added elements in green, removed elements in red with strikethrough
-- A pulsing **"DRAFT CHANGES — Press Update to apply"** hint appears above the action buttons
+The cavity glows while the oven frame is active.
 
-### Bottom Section — Actions
+### Temperature history
 
-- **Apply Program**: Starts or updates the active program (equivalent to pressing the timer encoder button on the physical interface).
-- **Cancel Program**: Stops the current program and clears the ESP32 draft.
+Tap the **Oven** temperature tile:
+- **During a program:** opens Home Assistant's History page starting at the program's preheat (found from the recorder).
+- **Otherwise:** opens the entity's more-info dialog.
+
+From the compact variant's dialog, the dialog closes first.
+
+### Controls
+
+- **Program timer** (only while a program runs), a ring plus text:
+  - Waiting: the delay countdown and when it starts.
+  - Preheating: oven temperature against the target.
+  - Ready: a **Start cooking** button.
+  - Cooking: time left and the finish time, or food against target temperature in probe mode.
+- **Recipes** (optional, idle only): one tap fills in the elements, temperature, time and probe target. It never starts the oven.
+- **Temperature**: a drag slider in 5 °C steps, plus −/+ buttons that snap to the nearest 5 °C.
+- **Elements**: Top, Bottom, Grill and Fan toggles, in any combination.
+- **Finish by**:
+  - The cook mode is shown, not chosen: the oven picks probe mode while a probe is plugged in and keeps it for the run.
+  - In timer mode, cook time in minutes (−10/−1/+1/+10 or type it in); 0 minutes means until stopped.
+  - In probe mode, the food target temperature. If the probe stops reading mid-cook, it says so.
+- **Start** (idle): Now, in 30 min, in 1 h, or **At…** a clock time. These set `start_delay`, clamped to the entity's min, max and step. While waiting, the delay becomes a stepper.
+- **Actions**: **Start** when idle (needs at least one element), **Cancel program** while running.
+
+### Draft-change feedback
+
+When a program is running, a draft value that differs from the running program shows:
+
+- **Temperature**: old value struck through → new value in amber, on the tile and in the slider header.
+- **Cook time / delay**: old → new in the block header.
+- **Elements**: a `+ add` or `− off` flag on the element button.
+- An amber bar, "N changes not applied yet", lists them, with an **Update** button that applies the program.
+
+Changes are hidden for 5 s after a program starts, while the device's sensors catch up.
+
+### Compact variant
+
+`variant: compact` shows a glance card for a room view or a narrow column:
+
+- state badge;
+- oven temperature (→ target while running);
+- a small oven drawing;
+- a progress bar (delay, preheat, cook time or probe);
+- **Full controls**, which opens the full card in a dialog over the page (close with ✕, Esc or a tap outside).
+
+When idle, **Set up** opens the same dialog.
+
+```yaml
+type: custom:libre-oven-card
+base_name: libre_oven
+variant: compact
+```
+
+### Recipes
+
+```yaml
+type: custom:libre-oven-card
+base_name: libre_oven
+recipes:
+  - { name: Bread, icon: mdi:bread-slice-outline, elements: [top, bottom], temperature: 220, duration: 35 }
+  - { name: Pizza, icon: mdi:pizza, elements: [bottom, fan], temperature: 250, duration: 12 }
+  - { name: Roast, icon: mdi:food-drumstick-outline, elements: [top, bottom, fan], temperature: 190, probe_target: 65 }
+```
+
+| Key | Description |
+|---|---|
+| `name` | Label on the chip |
+| `icon` | Optional `mdi:` icon |
+| `elements` | Any of `top`, `bottom`, `grill`, `fan`; the others are switched off |
+| `temperature` | Oven temperature (°C) |
+| `duration` | Cook time (minutes), used in timer mode |
+| `probe_target` | Food target (°C), used in probe mode (the oven picks the mode from probe presence) |
+
+A recipe chip is highlighted while the draft matches it.
+
+### Options
+
+| Option | Default | Description |
+|---|---|---|
+| `base_name` / `entities` | — | Device base name for auto-discovery, and/or explicit entity overrides (see above) |
+| `title` | `Libre Oven` | Card title |
+| `variant` | `full` | `full` or `compact` |
+| `recipes` | none | List of recipes (see above) |
 
 ---
 
@@ -241,6 +308,21 @@ The card reads the `timer_state_code` sensor (numeric) for logic and the `timer_
 | `grill_element_state`  | sensor | 0=off, 1=selected, 2=armed, 3=heating   |
 | `fan_element_state`    | sensor | 0=off, 1=selected, 2=active             |
 | `frame_state`          | sensor | 0=off, 1=selected, 2=active             |
+
+---
+
+## Changelog
+
+**3.0.0**
+- New dark, app-style design. All controls are visible at once and the bottom sheets are gone. The layout is two columns when wide and one column on a phone.
+- The oven drawing has a full-size convection fan.
+- Temperature is now a drag slider.
+- New: quick start-delay chips and an "At…" clock time.
+- New: optional `recipes`.
+- New: `variant: compact` glance card with a Full controls dialog.
+- Keeps 2.4.0's offline and fault states, notifications on failed actions, the temperature history tap and display-only cook mode.
+- Fixed: the draft-change hint no longer hides for 5 s when the card is opened while a program is already running.
+- Number limits now come from the entities' min, max and step.
 
 ---
 
