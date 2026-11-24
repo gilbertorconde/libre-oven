@@ -159,7 +159,15 @@ Tap the **Oven** temperature tile:
 - **During a program:** opens Home Assistant's History page starting at the program's preheat (found from the recorder).
 - **Otherwise:** opens the entity's more-info dialog.
 
-From the compact variant's dialog, the dialog closes first.
+From the compact variant's dialog, the dialog closes before the History page opens; the more-info dialog opens over it and the card's dialog stays open.
+
+The other readings open their entity's more-info dialog (with its history graph) on a tap, or Enter/Space from the keyboard. They look the same until hovered:
+- **Target / Set to** tile: `active_temperature` during a program, `set_temperature` otherwise.
+- **Food probe** row and **food now** in Finish by: `food_probe_temperature`.
+- **Program timer** text: the delay countdown (`delay_remaining`), the oven temperature while preheating, the target when ready, the cook countdown (`cook_remaining`), or the food temperature in probe mode.
+- Compact variant: the big temperature (`oven_temperature`) and the progress text.
+
+Controls (slider, steppers, element and action buttons) never open more-info.
 
 ### Controls
 
@@ -312,6 +320,11 @@ The card reads the `timer_state_code` sensor (numeric) for logic and the `timer_
 ---
 
 ## Changelog
+
+**3.1.0**
+- New: tap a reading (target temperature, food probe, timer, the compact card's temperature and progress) to open its entity's more-info dialog with the history graph. Readings respond to Enter and Space from the keyboard and look the same until hovered.
+- The **Oven** tile's more-info no longer closes the compact card's dialog; only the History page does.
+- Esc pressed in a dialog opened over the compact card's dialog no longer closes the card's dialog too.
 
 **3.0.2**
 - Fixed: the compact card's dialog no longer closes by itself when the dashboard redraws (for example right after you change a setting). A redraw also no longer drops a change that was waiting to be sent.

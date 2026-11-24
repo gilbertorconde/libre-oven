@@ -1,5 +1,5 @@
 // =============================================================================
-// Libre Oven Card  v3.0.2
+// Libre Oven Card  v3.1.0
 // Dark, app-style control card for the Libre Oven (ESPHome) firmware.
 //
 // Place this file in:  /config/www/libre-oven/libre-oven-card.js
@@ -12,7 +12,7 @@
 // =============================================================================
 
 const CARD_TAG = 'libre-oven-card';
-const CARD_VERSION = '3.0.2';
+const CARD_VERSION = '3.1.0';
 
 const STATE_LABELS = { 0: 'Idle', 1: 'Waiting', 2: 'Preheating', 3: 'Ready', 4: 'Cooking' };
 const STATE_KEYS = { 0: 'idle', 1: 'wait', 2: 'pre', 3: 'ready', 4: 'cook' };
@@ -114,7 +114,13 @@ class LibreOvenCard extends HTMLElement {
     this._lastProgramStartAt = 0;
     this._showAt = false;      // "At…" time picker open
     this._dlg = null;          // compact variant: { wrap, card }
-    this._onKey = (ev) => { if (ev.key === 'Escape') this._closeDialog(); };
+    // Esc closes the dialog only when it comes from the dialog (or nothing has
+    // focus), not from a more-info dialog opened on top of it.
+    this._onKey = (ev) => {
+      if (ev.key !== 'Escape' || !this._dlg) return;
+      const path = ev.composedPath();
+      if (path.includes(this._dlg.wrap) || path[0] === document.body || path[0] === document.documentElement) this._closeDialog();
+    };
   }
 
   static getStubConfig() {
@@ -201,6 +207,7 @@ class LibreOvenCard extends HTMLElement {
     this.shadowRoot.addEventListener('input', (e) => this._onInput(e));
     this.shadowRoot.addEventListener('change', (e) => this._onChange(e));
     this.shadowRoot.addEventListener('pointerdown', (e) => this._onPointerDown(e));
+    this.shadowRoot.addEventListener('keydown', (e) => this._onKeyDown(e));
     this._built = true;
     LibreOvenCard._loadFont();
   }
@@ -321,6 +328,12 @@ class LibreOvenCard extends HTMLElement {
   _fire(type, detail) {
     const from = this._host && this._host.isConnected ? this._host : this;
     from.dispatchEvent(new CustomEvent(type, { detail, bubbles: true, composed: true }));
+  }
+
+  // Attributes that make a read-only reading open its entity's more-info
+  // dialog (with the history graph). Nothing when the entity doesn't exist.
+  _mi(entityId) {
+    return this._exists(entityId) ? ` data-more-info="${esc(entityId)}" role="button" tabindex="0" title="Show history"` : '';
   }
 
   _toast(message) {
@@ -607,7 +620,9 @@ class LibreOvenCard extends HTMLElement {
   }
 
   // Progress (0..1) and texts for the live program, shared by both variants.
+  // `entity` is the entity behind the big reading (its more-info target).
   _progress(s) {
+    const e = this._config.entities;
     const code = s.timerStateCode;
     // Keyed on the latched cook mode, not probe presence, so a probe that stops
     // reading mid-cook shows as such instead of falling back to the timer view.
@@ -618,6 +633,7 @@ class LibreOvenCard extends HTMLElement {
       return {
         frac: tot > 0 && Number.isFinite(rem) ? 1 - rem / tot : 0,
         label: 'Starts in',
+        entity: s.delayCountdown ? e.delay_remaining : e.active_countdown,
         big: Number.isFinite(rem) ? this._fmtCountdown(rem) : '--',
         sub: `at ${Number.isFinite(rem) ? this._clock(rem * 1000) : '--'} · then ${s.activeCookTotal > 0 ? this._fmtMin(s.activeCookTotal) : 'until stopped'}`,
         short: Number.isFinite(rem) ? `starts in ${this._fmtCountdown(rem)}` : 'waiting',
@@ -626,20 +642,21 @@ class LibreOvenCard extends HTMLElement {
     if (code === 2) {
       const frac = s.activeTemp > 0 && Number.isFinite(s.ovenTemp) ? s.ovenTemp / s.activeTemp : 0;
       return {
-        frac, label: 'Preheating',
+        frac, label: 'Preheating', entity: e.oven_temperature,
         big: `${this._deg(s.ovenTemp)} <small>/ ${this._deg(s.activeTemp)}</small>`,
         sub: s.activeCookTotal > 0 ? `Then ${this._fmtMin(s.activeCookTotal)} of cooking` : 'Then cooks until stopped',
         short: `${this._deg(s.ovenTemp)} / ${this._deg(s.activeTemp)}`,
       };
     }
     if (code === 3) {
-      return { frac: 1, label: 'Oven ready', big: this._deg(s.activeTemp), sub: 'Put the food in, then start cooking', short: 'ready, waiting for you' };
+      return { frac: 1, label: 'Oven ready', entity: e.active_temperature, big: this._deg(s.activeTemp), sub: 'Put the food in, then start cooking', short: 'ready, waiting for you' };
     }
     if (code === 4) {
       if (probeMode) {
         const frac = s.foodTarget > 0 && Number.isFinite(s.foodTemp) ? s.foodTemp / s.foodTarget : 0;
         return {
           frac, label: Number.isFinite(s.foodTemp) ? 'Food probe' : 'Food probe: no reading',
+          entity: e.food_probe_temperature,
           big: `${this._deg(s.foodTemp)} <small>→ ${this._deg(s.foodTarget)}</small>`,
           sub: `Stops when the food reaches ${this._deg(s.foodTarget)}`,
           short: `food ${this._deg(s.foodTemp)} → ${this._deg(s.foodTarget)}`,
@@ -651,6 +668,7 @@ class LibreOvenCard extends HTMLElement {
       return {
         frac: Number.isFinite(rem) ? 1 - rem / tot : 0,
         label: 'Cook time left',
+        entity: s.cookCountdown ? e.cook_remaining : e.active_countdown,
         big: Number.isFinite(rem) ? this._fmtCountdown(rem) : '--',
         sub: `of ${this._fmtMin(s.activeCookTotal)} · done at ${Number.isFinite(rem) ? this._clock(rem * 1000) : '--'}`,
         short: Number.isFinite(rem) ? `${this._fmtCountdown(rem)} left` : 'cooking',
@@ -739,6 +757,12 @@ ha-icon { --mdc-icon-size: 16px; display: inline-flex; }
 .tbig b small { font-size: 14px; color: var(--text2); }
 .tbig b s { color: var(--text3); font-size: 18px; margin-right: 4px; }
 .tbig b em { font-style: normal; color: var(--amber); }
+/* Readings that open the entity's more-info dialog: unchanged at rest. */
+:where([data-more-info]) { border-radius: 10px; }
+[data-more-info] { cursor: pointer; transition: background-color .15s, box-shadow .15s; -webkit-tap-highlight-color: transparent; }
+[data-more-info]:hover { background-color: rgba(255,255,255,.05); }
+[data-more-info]:focus { outline: none; }
+[data-more-info]:focus-visible { box-shadow: 0 0 0 2px rgba(255,179,71,.6); }
 .tbig.link { text-align: left; width: 100%; cursor: pointer; transition: background .15s; }
 .tbig.link:hover { background: rgba(255,255,255,.05); }
 .tbig .label .ic-svg { display: inline-block; vertical-align: -2px; opacity: .7; }
@@ -966,7 +990,7 @@ ha-icon { --mdc-icon-size: 16px; display: inline-flex; }
       : `${targetVal > 0 ? Math.round(targetVal) : '--'}<small>°C</small>`;
     const heatFrac = targetVal > 0 && Number.isFinite(s.ovenTemp) ? Math.min(1, s.ovenTemp / targetVal) : 0;
     const probeRow = s.foodProbeConnected || (probeMode && s.programActive)
-      ? `<div class="probe">${svgIcon('probe', 22)}<div><b>${this._deg(s.foodTemp)} <span>→ ${this._deg(s.foodTarget)}</span></b><small>${Number.isFinite(s.foodTemp) ? 'Food probe' : 'Food probe: no reading'}${probeMode ? ` · auto-stop at ${this._deg(s.foodTarget)}` : ' · timer mode'}</small></div></div>`
+      ? `<div class="probe"${this._mi(e.food_probe_temperature)}>${svgIcon('probe', 22)}<div><b>${this._deg(s.foodTemp)} <span>→ ${this._deg(s.foodTarget)}</span></b><small>${Number.isFinite(s.foodTemp) ? 'Food probe' : 'Food probe: no reading'}${probeMode ? ` · auto-stop at ${this._deg(s.foodTarget)}` : ' · timer mode'}</small></div></div>`
       : '';
 
     // Timer hero (live program only)
@@ -977,7 +1001,7 @@ ha-icon { --mdc-icon-size: 16px; display: inline-flex; }
   <div class="ring"><svg viewBox="0 0 82 82"><circle cx="41" cy="41" r="${R}" fill="none" stroke="rgba(255,255,255,.08)" stroke-width="8"/>
     <circle cx="41" cy="41" r="${R}" fill="none" stroke="${acc}" stroke-width="8" stroke-linecap="round" stroke-dasharray="${(C * f).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 41 41)" style="filter:drop-shadow(0 0 5px ${acc})"/></svg>
     <b>${pr.noPct ? '∞' : Math.round(f * 100) + '%'}</b></div>
-  <div class="tx"><div class="label">${pr.label}</div><h4>${pr.big}</h4><p>${pr.sub}</p></div>
+  <div class="tx"${this._mi(pr.entity)}><div class="label">${pr.label}</div><h4>${pr.big}</h4><p>${pr.sub}</p></div>
   ${code === 3 && e.start_cooking ? `<button class="btn go" data-action="start-cooking" ${s.offline || s.fault ? 'disabled' : ''}>${svgIcon('play')}Start cooking</button>` : ''}
 </div>`;
     }
@@ -1028,7 +1052,7 @@ ha-icon { --mdc-icon-size: 16px; display: inline-flex; }
       ? `<s>${this._fmtMin(s.activeCookTotal)}</s> → <em>${this._fmtMin(s.cookDuration)}</em>`
       : (code >= 2 && code <= 4 && s.activeDelayTotal > 0 ? 'start delay already passed' : '');
     const finishBlk = probeMode
-      ? `<div class="blk"><div class="bh"><span class="label">Finish by</span><small>food now ${this._deg(s.foodTemp)}</small></div>${seg}
+      ? `<div class="blk"><div class="bh"><span class="label">Finish by</span><small${this._mi(e.food_probe_temperature)}>food now ${this._deg(s.foodTemp)}</small></div>${seg}
   <div class="stepper"><button data-action="food-target-down-10">−10</button><button data-action="food-target-down">−1</button>
     <label class="v"><input id="food-target-input" type="number" inputmode="numeric" min="${fRange.min}" max="${fRange.max}" value="${Math.round(s.foodTarget)}" aria-label="Food target temperature"><span>°C food</span></label>
     <button data-action="food-target-up">+1</button><button data-action="food-target-up-10">+10</button></div></div>`
@@ -1104,7 +1128,7 @@ ha-icon { --mdc-icon-size: 16px; display: inline-flex; }
         'r-hero-n': hero,
         'r-oven': this._ovenSvg(s),
         'r-temps': `<button class="tbig link" data-action="temp-history" title="Temperature history (from the preheat during a program)"><span class="label">Oven ${svgIcon('chart', 13)}</span><b>${Number.isFinite(s.ovenTemp) ? Math.round(s.ovenTemp) : '--'}<small>°C</small></b><div class="prog"><i style="width:${(heatFrac * 100).toFixed(0)}%"></i></div></button>
-        <div class="tbig"><span class="label">${s.programActive ? 'Target' : 'Set to'}</span><b>${targetHtml}</b></div>`,
+        <div class="tbig"${this._mi(s.programActive ? e.active_temperature : e.set_temperature)}><span class="label">${s.programActive ? 'Target' : 'Set to'}</span><b>${targetHtml}</b></div>`,
         'r-probe': probeRow,
         'r-hero-w': hero,
         'r-recipes': recipesBlk,
@@ -1126,6 +1150,7 @@ ha-icon { --mdc-icon-size: 16px; display: inline-flex; }
   // ── Compact glance ─────────────────────────────────────────────────────────
   _compactParts() {
     const s = this._readState();
+    const e = this._config.entities;
     const code = s.timerStateCode;
     const badge = this._badge(s);
     const pr = this._progress(s);
@@ -1145,13 +1170,13 @@ ha-icon { --mdc-icon-size: 16px; display: inline-flex; }
     } else {
       foot = elSummary === 'None' ? 'No program set' : `Draft: ${elSummary} · ${this._deg(s.draftTemp)}`;
     }
-    const prRow = pr ? `<div class="pr"><div class="prog"><i style="width:${(Math.max(0, Math.min(1, pr.frac)) * 100).toFixed(0)}%"></i></div><span>${pr.short}</span></div>` : '';
+    const prRow = pr ? `<div class="pr"><div class="prog"><i style="width:${(Math.max(0, Math.min(1, pr.frac)) * 100).toFixed(0)}%"></i></div><span${code === 3 ? '' : this._mi(pr.entity)}>${pr.short}</span></div>` : '';
     const right = s.programActive || s.offline || s.fault ? this._miniOvenSvg(s) : `<button class="btn ghost" data-action="open-dialog">${svgIcon('play', 16)}Set up</button>`;
     return {
       cls: `glance${hot && !s.offline ? ' hot' : ''}${s.offline ? ' offline' : ''}${s.fault ? ' fault' : ''}`,
       regions: {
         'g-main': `<div class="name">${svgIcon('stove', 16)}<span>${esc(this._config.title || 'Libre Oven')}</span><span class="badge st-${badge.key}"><span class="d"></span>${badge.label}</span></div>
-    <div class="big">${big}</div>`,
+    <div class="big"${this._mi(e.oven_temperature)}>${big}</div>`,
         'g-side': right,
         'g-pr': s.offline ? '' : prRow,
         'g-foot': `<div class="foot"><span>${esc(foot)}</span><button class="link" data-action="open-dialog">Full controls ${svgIcon('chevron', 16)}</button></div>`,
@@ -1227,8 +1252,12 @@ ha-icon { --mdc-icon-size: 16px; display: inline-flex; }
 
   // ── Click handling ─────────────────────────────────────────────────────────
   _onClick(e) {
-    const actionEl = e.composedPath().find((el) => el instanceof Element && el.dataset?.action);
-    if (!actionEl || actionEl.disabled) return;
+    // The innermost control or reading wins, so a button inside a reading keeps its action.
+    const hit = e.composedPath().find((el) => el === this.shadowRoot || (el instanceof Element && (el.dataset?.action || el.dataset?.moreInfo)));
+    if (!hit || hit === this.shadowRoot) return;
+    if (!hit.dataset.action) { this._moreInfo(hit.dataset.moreInfo); return; }
+    const actionEl = hit;
+    if (actionEl.disabled) return;
     const action = actionEl.dataset.action;
     const ent = this._config.entities;
     // Offline: nothing can reach the oven, so only the card's own navigation works.
@@ -1239,10 +1268,8 @@ ha-icon { --mdc-icon-size: 16px; display: inline-flex; }
       case 'open-dialog': this._openDialog(); return;
       case 'close-dialog': this.dispatchEvent(new CustomEvent('libre-oven-close')); return;
 
-      // Oven temperature history (native HA graph). HA's dialogs and pages sit
-      // under the compact card's dialog, so that closes first.
+      // Oven temperature history (native HA graph).
       case 'temp-history':
-        if (this._host) this._host._closeDialog();
         this._openTempHistory();
         return;
 
@@ -1326,6 +1353,18 @@ ha-icon { --mdc-icon-size: 16px; display: inline-flex; }
     }
   }
 
+  // Enter or Space on a focused reading opens its more-info dialog.
+  _onKeyDown(e) {
+    if ((e.key !== 'Enter' && e.key !== ' ') || !e.target?.dataset?.moreInfo) return;
+    e.preventDefault();
+    this._moreInfo(e.target.dataset.moreInfo);
+  }
+
+  // HA's more-info dialog opens over the compact card's dialog, which stays open.
+  _moreInfo(entityId) {
+    if (entityId) this._fire('hass-more-info', { entityId });
+  }
+
   // Fills the draft from a recipe; the user still presses Start.
   _applyRecipe(r) {
     if (!r) return;
@@ -1363,9 +1402,11 @@ ha-icon { --mdc-icon-size: 16px; display: inline-flex; }
     if (!ent.oven_temperature) return;
     const start = this._readState().programActive ? await this._findSessionStart() : null;
     if (!start) {
-      this._fire('hass-more-info', { entityId: ent.oven_temperature });
+      this._moreInfo(ent.oven_temperature);
       return;
     }
+    // The History page sits under the compact card's dialog, so that closes first.
+    if (this._host) this._host._closeDialog();
     const from = new Date(start.getTime() - 60 * 1000);  // 1 min of baseline
     const url = `/history?entity_id=${encodeURIComponent(ent.oven_temperature)}`
       + `&start_date=${encodeURIComponent(from.toISOString())}`
