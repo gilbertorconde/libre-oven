@@ -1,5 +1,5 @@
 // =============================================================================
-// Libre Oven Card  v3.0.1
+// Libre Oven Card  v3.0.2
 // Dark, app-style control card for the Libre Oven (ESPHome) firmware.
 //
 // Place this file in:  /config/www/libre-oven/libre-oven-card.js
@@ -12,7 +12,7 @@
 // =============================================================================
 
 const CARD_TAG = 'libre-oven-card';
-const CARD_VERSION = '3.0.1';
+const CARD_VERSION = '3.0.2';
 
 const STATE_LABELS = { 0: 'Idle', 1: 'Waiting', 2: 'Preheating', 3: 'Ready', 4: 'Cooking' };
 const STATE_KEYS = { 0: 'idle', 1: 'wait', 2: 'pre', 3: 'ready', 4: 'cook' };
@@ -181,12 +181,18 @@ class LibreOvenCard extends HTMLElement {
   }
 
   disconnectedCallback() {
-    clearTimeout(this._durationTimer);
-    clearTimeout(this._delayTimer);
-    clearTimeout(this._foodTargetTimer);
-    for (const t of Object.values(this._elemTimers)) clearTimeout(t);
-    for (const pend of Object.values(this._numPending)) clearTimeout(pend.timer);
-    this._closeDialog();
+    // Dashboards that redraw (gil-home's room sheet) detach and re-attach the
+    // card in one go. Only tear down when it is really gone, so a redraw
+    // neither closes the dialog nor drops a pending write.
+    setTimeout(() => {
+      if (this.isConnected) return;
+      clearTimeout(this._durationTimer);
+      clearTimeout(this._delayTimer);
+      clearTimeout(this._foodTargetTimer);
+      for (const t of Object.values(this._elemTimers)) clearTimeout(t);
+      for (const pend of Object.values(this._numPending)) clearTimeout(pend.timer);
+      this._closeDialog();
+    }, 0);
   }
 
   _initShadow() {
